@@ -19,19 +19,6 @@
 
   <!-- Stylesheet -->
   <link rel="stylesheet" href="styles.css" />
-
-  <!-- Core Client-Side Processing Libraries via CDN -->
-  <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js" defer></script>
-  <script src="https://cdn.jsdelivr.net/npm/@pdf-lib/fontkit@0.0.4/dist/fontkit.umd.min.js" defer></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" defer></script>
-  <script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js" defer></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" defer></script>
-
-  <!-- Application Scripts (Classic defer scripts for file:// & GitHub Pages compatibility) -->
-  <script src="js/core.js" defer></script>
-  <script src="js/tools-convert.js" defer></script>
-  <script src="js/tools-pdf.js" defer></script>
-  <script src="js/app.js" defer></script>
 </head>
 <body>
   <!-- Top Navigation Header -->
@@ -211,5 +198,15 @@
 
   <!-- Toast Notification Container -->
   <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- Core Client-Side Processing Libraries via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@pdf-lib/fontkit@0.0.4/dist/fontkit.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+  <!-- Unified Application Script -->
+  <script src="app.js"></script>
 </body>
 </html>
