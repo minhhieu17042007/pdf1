@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PDF Studio Pro — Bộ Công Cụ Xử Lý PDF Đa Năng</title>
+  <meta
+    name="description"
+    content="Bộ công cụ xử lý PDF đa năng 100% cục bộ trên trình duyệt: chuyển PDF sang Word (.docx), gộp, tách, xoay trang, ảnh sang PDF, PDF sang ảnh, đánh số trang và watermark."
+  />
+
+  <!-- Google Fonts: Be Vietnam Pro -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap"
+    rel="stylesheet"
+  />
+
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="styles.css" />
+
+  <!-- Core Client-Side Processing Libraries via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/@pdf-lib/fontkit@0.0.4/dist/fontkit.umd.min.js" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" defer></script>
+
+  <!-- Application Scripts (Classic defer scripts for file:// & GitHub Pages compatibility) -->
+  <script src="js/core.js" defer></script>
+  <script src="js/tools-convert.js" defer></script>
+  <script src="js/tools-pdf.js" defer></script>
+  <script src="js/app.js" defer></script>
+</head>
+<body>
+  <!-- Top Navigation Header -->
+  <header class="app-header">
+    <div class="header-inner">
+      <button type="button" id="brandHomeBtn" class="brand-logo" aria-label="PDF Studio Pro Trang chủ">
+        <span class="brand-icon" aria-hidden="true">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+            <rect x="3" y="2" width="14" height="18" rx="3" fill="currentColor" fill-opacity="0.18" stroke="currentColor" stroke-width="1.8" />
+            <path d="M7 7h6M7 11h6M7 15h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+            <rect x="10" y="6" width="11" height="15" rx="2.5" fill="#ffffff" stroke="currentColor" stroke-width="1.8" />
+            <path d="M13 11h5M13 14.5h5M13 18h3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+          </svg>
+        </span>
+        <span class="brand-text">
+          <span class="brand-title">PDF Studio <span class="brand-pro">Pro</span></span>
+          <span class="brand-sub">Bộ Công Cụ PDF Đa Năng</span>
+        </span>
+      </button>
+
+      <nav class="header-center" aria-label="Điều hướng chính">
+        <button type="button" id="navHomeBtn" class="nav-home-btn is-active">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="3" width="7" height="7" rx="1.5" />
+            <rect x="14" y="3" width="7" height="7" rx="1.5" />
+            <rect x="3" y="14" width="7" height="7" rx="1.5" />
+            <rect x="14" y="14" width="7" height="7" rx="1.5" />
+          </svg>
+          <span>Trang chủ (Tất cả công cụ)</span>
+        </button>
+      </nav>
+
+      <div class="header-right">
+        <div class="security-badge" title="Mọi thao tác đọc, chỉnh sửa và xuất file đều chạy hoàn toàn trong bộ nhớ trình duyệt của bạn.">
+          <span>🔒 Xử lý 100% trên trình duyệt - An toàn tuyệt đối</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main class="app-main">
+    <!-- Library Missing / Offline Fallback Alert -->
+    <div id="cdnWarningBanner" class="cdn-warning hidden" role="alert">
+      <div class="cdn-warning-icon">⚠️</div>
+      <div>
+        <strong>Không thể tải một số thư viện xử lý từ CDN.</strong>
+        <p id="cdnWarningDetail">Vui lòng kiểm tra kết nối mạng (lần đầu mở) rồi tải lại trang để ứng dụng tải đầy đủ các thư viện PDF.</p>
+      </div>
+    </div>
+
+    <!-- DASHBOARD VIEW (7 Tools Bento Grid) -->
+    <section id="dashboardView" class="dashboard-view" aria-label="Danh sách công cụ PDF">
+      <div class="hero-intro">
+        <div class="hero-pill">✨ Nhanh chóng • Bảo mật • Không giới hạn dung lượng máy chủ</div>
+        <h1>Bộ Công Cụ Xử Lý PDF Toàn Diện</h1>
+        <p>
+          Chuyển đổi, gộp, tách, sắp xếp và bảo vệ tài liệu PDF ngay trên trình duyệt — dữ liệu không bao giờ rời khỏi thiết bị của bạn.
+        </p>
+      </div>
+
+      <div id="bentoGrid" class="bento-grid">
+        <!-- Rendered dynamically by app.js -->
+      </div>
+    </section>
+
+    <!-- WORKSPACE VIEW (70% Left / 30% Sticky Right) -->
+    <section id="workspaceView" class="workspace-view hidden" aria-label="Không gian làm việc">
+      <!-- Top Tool Bar / Breadcrumb -->
+      <div class="workspace-topbar">
+        <div class="workspace-breadcrumb">
+          <button type="button" id="backToHomeBtn" class="btn-ghost-sm">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M19 12H5M12 19l-7-7 7-7" />
+            </svg>
+            <span>Tất cả công cụ</span>
+          </button>
+          <span class="crumb-sep">/</span>
+          <div id="workspaceToolBadge" class="workspace-tool-badge"></div>
+        </div>
+
+        <div id="workspaceQuickTools" class="workspace-quick-tools">
+          <!-- Tool-specific quick switcher pills or status -->
+        </div>
+      </div>
+
+      <div class="split-workspace">
+        <!-- LEFT COLUMN (70%) -->
+        <div class="workspace-left">
+          <div class="panel-card left-main-card">
+            <!-- Initial / Compact Dropzone -->
+            <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Kéo thả hoặc chọn file để bắt đầu">
+              <input type="file" id="fileInput" class="sr-only" />
+              <div class="dropzone-content">
+                <div class="dropzone-icon" id="dropzoneIcon">
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="17 8 12 3 7 8" />
+                    <line x1="12" y1="3" x2="12" y2="15" />
+                  </svg>
+                </div>
+                <h2 id="dropzoneTitle">Kéo &amp; thả file vào đây</h2>
+                <p id="dropzoneSubtitle">hoặc bấm để chọn tệp từ máy tính của bạn</p>
+                <div class="dropzone-actions">
+                  <span class="btn-upload-fake">Chọn tệp từ máy</span>
+                  <span id="dropzoneAcceptTag" class="accept-tag">Hỗ trợ .PDF</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Active File Workspace Content (hidden until file(s) loaded) -->
+            <div id="stageToolbar" class="stage-toolbar hidden"></div>
+            <div id="stageBody" class="stage-body hidden"></div>
+          </div>
+        </div>
+
+        <!-- RIGHT COLUMN (30% Sticky Sidebar) -->
+        <aside class="workspace-right" aria-label="Cài đặt và xuất file">
+          <div class="panel-card settings-panel">
+            <div class="settings-header">
+              <h3>Tùy chọn &amp; Xuất file</h3>
+              <span id="settingsToolTag" class="settings-tag">Cài đặt</span>
+            </div>
+
+            <!-- Dynamic Tool Options -->
+            <div id="toolSettingsContainer" class="tool-settings-body"></div>
+
+            <!-- Output File Name -->
+            <div class="setting-group output-name-group">
+              <label for="outputFilenameInput" class="setting-label">
+                Tên file đầu ra
+              </label>
+              <div class="filename-input-wrap">
+                <input
+                  type="text"
+                  id="outputFilenameInput"
+                  class="text-input"
+                  placeholder="ket_qua"
+                  autocomplete="off"
+                />
+                <span id="outputExtBadge" class="ext-badge">.pdf</span>
+              </div>
+            </div>
+
+            <!-- Progress Area -->
+            <div id="progressBox" class="progress-box">
+              <div class="progress-meta">
+                <span id="progressStatus" class="progress-status">Sẵn sàng xử lý</span>
+                <span id="progressPercent" class="progress-percent">0%</span>
+              </div>
+              <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div id="progressFill" class="progress-fill" style="width: 0%"></div>
+              </div>
+            </div>
+
+            <!-- Primary CTA Button -->
+            <button type="button" id="primaryActionBtn" class="btn-primary-action" disabled>
+              <span id="primaryActionSpinner" class="btn-spinner hidden" aria-hidden="true"></span>
+              <span id="primaryActionLabel">Thực hiện xử lý</span>
+            </button>
+
+            <!-- Post-Export Quick Result Card -->
+            <div id="resultSummaryCard" class="result-summary-card hidden"></div>
+          </div>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <!-- Footer -->
+  <footer class="app-footer">
+    <div class="footer-inner">
+      <span><strong>PDF Studio Pro</strong> — Mọi thao tác xử lý diễn ra trực tiếp trên trình duyệt của bạn.</span>
+      <span class="footer-libs">Vận hành cục bộ bởi pdf-lib • pdf.js • docx • JSZip</span>
+    </div>
+  </footer>
+
+  <!-- Toast Notification Container -->
+  <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>
