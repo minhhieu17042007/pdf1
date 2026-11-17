@@ -1,14 +1,14 @@
 /* ==========================================================================
-   PDF Studio Pro — Unified Application Bundle
-   Order: 1. Core -> 2. Conversion Tools -> 3. PDF Tools -> 4. UI Controller
-   ========================================================================== */
-
-/* ==========================================================================
-   PDF Studio Pro — Core Utilities, Memory Management & Library Wrappers
+   PDF Studio Pro — Bộ Công Cụ Xử Lý PDF Đa Năng (100% Client-Side)
+   Unified Single-File Application Script
    ========================================================================== */
 
 (function (global) {
   "use strict";
+
+  /* --------------------------------------------------------------------------
+     1. Configuration & CDN Library Fallbacks
+     -------------------------------------------------------------------------- */
 
   const PDFJS_WORKER_CDN =
     "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
@@ -18,18 +18,67 @@
     "https://cdn.jsdelivr.net/gh/bettergui/BeVietnamPro@main/fonts/ttf/BeVietnamPro-Regular.ttf",
   ];
 
+  const LIBRARY_SPECS = [
+    {
+      key: "PDFLib",
+      name: "pdf-lib",
+      urls: [
+        "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js",
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js",
+      ],
+    },
+    {
+      key: "fontkit",
+      name: "@pdf-lib/fontkit",
+      optional: true,
+      urls: [
+        "https://cdn.jsdelivr.net/npm/@pdf-lib/fontkit@0.0.4/dist/fontkit.umd.min.js",
+        "https://unpkg.com/@pdf-lib/fontkit@0.0.4/dist/fontkit.umd.min.js",
+      ],
+    },
+    {
+      key: "pdfjsLib",
+      name: "pdf.js",
+      urls: [
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js",
+        "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js",
+      ],
+    },
+    {
+      key: "docx",
+      name: "docx",
+      urls: [
+        "https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.iife.js",
+        "https://unpkg.com/docx@8.5.0/build/index.iife.js",
+      ],
+    },
+    {
+      key: "JSZip",
+      name: "JSZip",
+      urls: [
+        "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js",
+        "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js",
+      ],
+    },
+  ];
+
   const trackedObjectUrls = new Set();
   let cachedFontBytes = null;
   let fontFetchAttempted = false;
   let workerInitPromise = null;
+  let libraryRecoveryPromise = null;
 
   /* --------------------------------------------------------------------------
-     Library & PDF.js Worker Initialization
+     2. Safe External Library & PDF.js Worker Initialization
      -------------------------------------------------------------------------- */
 
   function configurePdfWorkerSync() {
-    if (global.pdfjsLib && global.pdfjsLib.GlobalWorkerOptions) {
-      global.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_CDN;
+    try {
+      if (global.pdfjsLib && global.pdfjsLib.GlobalWorkerOptions) {
+        global.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_CDN;
+      }
+    } catch (_err) {
+      // Ignore if pdfjsLib is not loaded yet
     }
   }
 
@@ -45,30 +94,166 @@
         const scriptText = await res.text();
         const blob = new Blob([scriptText], { type: "application/javascript" });
         const blobUrl = URL.createObjectURL(blob);
-        // Verify Web Worker can actually start from Blob URL (works on https:// and modern file://)
         const testWorker = new Worker(blobUrl);
         testWorker.terminate();
         global.pdfjsLib.GlobalWorkerOptions.workerSrc = blobUrl;
       } catch (_err) {
-        // Fallback silently to CDN URL (pdf.js handles fake worker automatically)
-        global.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_CDN;
+        configurePdfWorkerSync();
       }
     })();
 
     return workerInitPromise;
   }
 
-  function checkRequiredLibraries() {
+  function loadExternalScript(url, timeoutMs = 12000) {
+    return new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = url;
+      script.async = true;
+
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        script.remove();
+        reject(new Error(`Quá thời gian tải: ${url}`));
+      }, timeoutMs);
+
+      script.onload = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+
+      script.onerror = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        script.remove();
+        reject(new Error(`Không thể tải: ${url}`));
+      };
+
+      document.head.appendChild(script);
+    });
+  }
+
+  function getMissingRequiredLibraries() {
     const missing = [];
-    if (!global.PDFLib) missing.push("pdf-lib");
-    if (!global.pdfjsLib) missing.push("pdf.js");
-    if (!global.docx) missing.push("docx");
-    if (!global.JSZip) missing.push("JSZip");
+    for (const spec of LIBRARY_SPECS) {
+      if (!spec.optional && !global[spec.key]) {
+        missing.push(spec.name);
+      }
+    }
     return missing;
   }
 
+  async function recoverMissingLibraries() {
+    if (libraryRecoveryPromise) return libraryRecoveryPromise;
+
+    libraryRecoveryPromise = (async () => {
+      for (const spec of LIBRARY_SPECS) {
+        if (global[spec.key]) continue;
+        for (const url of spec.urls) {
+          try {
+            await loadExternalScript(url);
+            if (global[spec.key]) break;
+          } catch (_err) {
+            // Try next mirror
+          }
+        }
+      }
+      configurePdfWorkerSync();
+    })();
+
+    try {
+      await libraryRecoveryPromise;
+    } finally {
+      libraryRecoveryPromise = null;
+    }
+  }
+
+  function updateCdnBannerVisibility() {
+    try {
+      if (!dom.cdnWarningBanner || !dom.cdnWarningDetail) return;
+      const missing = getMissingRequiredLibraries();
+      if (missing.length > 0) {
+        dom.cdnWarningBanner.classList.remove("hidden");
+        dom.cdnWarningDetail.textContent =
+          `Chưa tải được thư viện: ${missing.join(", ")}. Giao diện vẫn hiển thị bình thường; vui lòng kiểm tra kết nối mạng rồi tải lại trang để xử lý tệp.`;
+      } else {
+        dom.cdnWarningBanner.classList.add("hidden");
+      }
+    } catch (_err) {
+      // Never break UI
+    }
+  }
+
+  function initExternalLibrariesSafely() {
+    try {
+      configurePdfWorkerSync();
+    } catch (_err) {
+      // Safe no-op
+    }
+
+    const finalizeLibs = async () => {
+      try {
+        if (getMissingRequiredLibraries().length > 0) {
+          await recoverMissingLibraries();
+        }
+        configurePdfWorkerSync();
+        await ensurePdfWorkerReady();
+      } catch (_err) {
+        // Handled cleanly via banner check
+      } finally {
+        updateCdnBannerVisibility();
+      }
+    };
+
+    if (document.readyState === "complete") {
+      finalizeLibs();
+    } else {
+      global.addEventListener("load", finalizeLibs, { once: true });
+    }
+  }
+
+  async function ensureLibrariesReadyForAction(requiredKeys) {
+    // Wait briefly if async scripts from <head> are still finishing
+    const start = Date.now();
+    while (Date.now() - start < 4000) {
+      const allLoaded = requiredKeys.every((k) => Boolean(global[k]));
+      if (allLoaded) {
+        configurePdfWorkerSync();
+        return;
+      }
+      if (document.readyState === "complete") break;
+      await new Promise((r) => setTimeout(r, 120));
+    }
+
+    const missingBefore = requiredKeys.filter((k) => !global[k]);
+    if (missingBefore.length > 0) {
+      await recoverMissingLibraries();
+      updateCdnBannerVisibility();
+    }
+
+    const stillMissing = requiredKeys.filter((k) => !global[k]);
+    if (stillMissing.length > 0) {
+      const names = stillMissing
+        .map((k) => {
+          const spec = LIBRARY_SPECS.find((s) => s.key === k);
+          return spec ? spec.name : k;
+        })
+        .join(", ");
+      throw new Error(
+        `Không thể tải thư viện (${names}) từ CDN. Vui lòng kiểm tra kết nối Internet và thử lại.`
+      );
+    }
+
+    configurePdfWorkerSync();
+  }
+
   /* --------------------------------------------------------------------------
-     Memory Management & Safe Downloads
+     3. Memory Management, Formatting & UI Feedback Helpers
      -------------------------------------------------------------------------- */
 
   function trackObjectUrl(url) {
@@ -78,9 +263,7 @@
 
   function revokeTrackedUrl(url) {
     if (!url) return;
-    if (trackedObjectUrls.has(url)) {
-      trackedObjectUrls.delete(url);
-    }
+    trackedObjectUrls.delete(url);
     try {
       URL.revokeObjectURL(url);
     } catch (_e) {
@@ -109,7 +292,6 @@
     link.click();
     document.body.removeChild(link);
 
-    // Free memory shortly after browser begins saving
     setTimeout(() => {
       try {
         URL.revokeObjectURL(url);
@@ -118,10 +300,6 @@
       }
     }, 2000);
   }
-
-  /* --------------------------------------------------------------------------
-     Formatting, Sanitization & UI Feedback
-     -------------------------------------------------------------------------- */
 
   function formatBytes(bytes) {
     if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
@@ -209,20 +387,19 @@
   }
 
   /* --------------------------------------------------------------------------
-     PDF Validation & Friendly Vietnamese Error Translation
+     4. PDF Validation, Parsing & Canvas Rendering
      -------------------------------------------------------------------------- */
 
   function hasPdfSignature(arrayBuffer) {
     if (!arrayBuffer || arrayBuffer.byteLength < 5) return false;
     const head = new Uint8Array(arrayBuffer, 0, Math.min(1024, arrayBuffer.byteLength));
-    // %PDF- may appear within the first 1024 bytes according to PDF spec
     for (let i = 0; i <= head.length - 5; i++) {
       if (
-        head[i] === 0x25 && // %
-        head[i + 1] === 0x50 && // P
-        head[i + 2] === 0x44 && // D
-        head[i + 3] === 0x46 && // F
-        head[i + 4] === 0x2d // -
+        head[i] === 0x25 &&
+        head[i + 1] === 0x50 &&
+        head[i + 2] === 0x44 &&
+        head[i + 3] === 0x46 &&
+        head[i + 4] === 0x2d
       ) {
         return true;
       }
@@ -257,17 +434,16 @@
     return `${prefix}${msg || "Đã xảy ra lỗi không xác định khi xử lý tệp."}`;
   }
 
-  async function readFileAsArrayBuffer(file) {
-    return await file.arrayBuffer();
-  }
-
   async function openPdfWithPdfJs(arrayBuffer, fileName) {
+    await ensureLibrariesReadyForAction(["pdfjsLib"]);
     await ensurePdfWorkerReady();
+
     if (!hasPdfSignature(arrayBuffer)) {
-      throw new Error(`${fileName ? `"${fileName}": ` : ""}Tệp không phải là file PDF hợp lệ (thiếu chữ ký %PDF-).`);
+      throw new Error(
+        `${fileName ? `"${fileName}": ` : ""}Tệp không phải là file PDF hợp lệ (thiếu chữ ký %PDF-).`
+      );
     }
 
-    // Pass a sliced copy so pdf.js worker transfer never detaches the caller's ArrayBuffer
     const copy = new Uint8Array(arrayBuffer.slice(0));
     try {
       const loadingTask = global.pdfjsLib.getDocument({
@@ -282,6 +458,7 @@
   }
 
   async function openPdfWithPdfLib(arrayBuffer, fileName) {
+    await ensureLibrariesReadyForAction(["PDFLib"]);
     if (!hasPdfSignature(arrayBuffer)) {
       throw new Error(`${fileName ? `"${fileName}": ` : ""}Tệp không phải là file PDF hợp lệ.`);
     }
@@ -293,10 +470,6 @@
       throw new Error(translatePdfError(err, fileName));
     }
   }
-
-  /* --------------------------------------------------------------------------
-     PDF Page Canvas Rendering (Memory-Safe)
-     -------------------------------------------------------------------------- */
 
   function canvasToBlob(canvas, mimeType, quality) {
     return new Promise((resolve, reject) => {
@@ -332,7 +505,9 @@
     canvas.width = Math.max(1, Math.floor(viewport.width));
     canvas.height = Math.max(1, Math.floor(viewport.height));
 
-    const ctx = canvas.getContext("2d", { alpha: mimeType === "image/png" && background === "transparent" });
+    const ctx = canvas.getContext("2d", {
+      alpha: mimeType === "image/png" && background === "transparent",
+    });
     if (background !== "transparent") {
       ctx.fillStyle = background;
       ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -349,7 +524,6 @@
         pointHeight: baseViewport.height,
       };
     } finally {
-      // Immediately release backing canvas bitmap memory & pdf.js page resources
       canvas.width = 0;
       canvas.height = 0;
       if (typeof page.cleanup === "function") {
@@ -358,17 +532,14 @@
     }
   }
 
-  /* --------------------------------------------------------------------------
-     Page Range Parser & Formatter (2-way Synchronization)
-     -------------------------------------------------------------------------- */
-
   function parsePageRange(input, totalPages) {
     const trimmed = String(input || "").trim();
-    if (!trimmed) {
-      return { pages: [], error: null };
-    }
+    if (!trimmed) return { pages: [], error: null };
 
-    const tokens = trimmed.split(",").map((t) => t.trim()).filter(Boolean);
+    const tokens = trimmed
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
     const selected = new Set();
 
     for (const token of tokens) {
@@ -390,9 +561,7 @@
             error: `Khoảng trang "${token}" không hợp lệ (số đầu phải ≤ số cuối).`,
           };
         }
-        for (let p = start; p <= end; p++) {
-          selected.add(p);
-        }
+        for (let p = start; p <= end; p++) selected.add(p);
       } else if (singleMatch) {
         const num = parseInt(singleMatch[1], 10);
         if (num < 1 || num > totalPages) {
@@ -410,8 +579,10 @@
       }
     }
 
-    const sorted = Array.from(selected).sort((a, b) => a - b);
-    return { pages: sorted, error: null };
+    return {
+      pages: Array.from(selected).sort((a, b) => a - b),
+      error: null,
+    };
   }
 
   function formatPageRanges(pageNumbers) {
@@ -438,10 +609,6 @@
     parts.push(start === prev ? `${start}` : `${start}-${prev}`);
     return parts.join(", ");
   }
-
-  /* --------------------------------------------------------------------------
-     Vietnamese Font Support & Canvas-PNG Fallback for pdf-lib
-     -------------------------------------------------------------------------- */
 
   async function loadVietnameseFontBytes() {
     if (cachedFontBytes) return cachedFontBytes;
@@ -473,7 +640,7 @@
         return { font, isCustom: true };
       }
     } catch (_err) {
-      // Fallback to standard font + canvas PNG for non-WinAnsi text
+      // Fallback to standard font + canvas PNG
     }
     const fallbackFont = await pdfDoc.embedFont(global.PDFLib.StandardFonts.HelveticaBold);
     return { font: fallbackFont, isCustom: false };
@@ -481,9 +648,13 @@
 
   function hexToRgbNormalized(hex) {
     const clean = String(hex || "#64748B").replace("#", "");
-    const full = clean.length === 3
-      ? clean.split("").map((c) => c + c).join("")
-      : clean.padEnd(6, "0").slice(0, 6);
+    const full =
+      clean.length === 3
+        ? clean
+            .split("")
+            .map((c) => c + c)
+            .join("")
+        : clean.padEnd(6, "0").slice(0, 6);
     const num = parseInt(full, 16);
     if (Number.isNaN(num)) return { r: 0.39, g: 0.45, b: 0.55 };
     return {
@@ -494,7 +665,7 @@
   }
 
   async function renderTextToPngBuffer(text, fontSizePt, colorHex, bold = true) {
-    const scale = 3; // Crisp 216+ DPI
+    const scale = 3;
     const probeCanvas = document.createElement("canvas");
     const probeCtx = probeCanvas.getContext("2d");
     const fontSpec = `${bold ? "700" : "500"} ${fontSizePt * scale}px "Be Vietnam Pro", "Segoe UI", Arial, sans-serif`;
@@ -528,57 +699,16 @@
     } finally {
       canvas.width = 0;
       canvas.height = 0;
+      probeCanvas.width = 0;
+      probeCanvas.height = 0;
     }
   }
 
-  global.PDFStudio = {
-    configurePdfWorkerSync,
-    ensurePdfWorkerReady,
-    checkRequiredLibraries,
-    trackObjectUrl,
-    revokeTrackedUrl,
-    revokeAllTrackedUrls,
-    downloadBlob,
-    formatBytes,
-    stripExtension,
-    sanitizeFilename,
-    escapeHtml,
-    yieldToUI,
-    setProgress,
-    showToast,
-    hasPdfSignature,
-    translatePdfError,
-    readFileAsArrayBuffer,
-    openPdfWithPdfJs,
-    openPdfWithPdfLib,
-    canvasToBlob,
-    renderPdfPageToBlob,
-    parsePageRange,
-    formatPageRanges,
-    embedVietnameseFont,
-    hexToRgbNormalized,
-    renderTextToPngBuffer,
-  };
-})(window);
-
-/* ==========================================================================
-   PDF Studio Pro — Conversion Tools
-   Tool 1: PDF -> Word (.docx)
-   Tool 5: Images -> PDF (JPG / PNG / WebP)
-   Tool 6: PDF -> Images (PNG / JPG + ZIP)
-   ========================================================================== */
-
-(function (global) {
-  "use strict";
-
-  const S = () => global.PDFStudio;
-
-  /* ==========================================================================
-     TOOL 1: PDF -> WORD (.DOCX)
-     ========================================================================== */
+  /* --------------------------------------------------------------------------
+     5. Tool 1: PDF -> Word (.docx)
+     -------------------------------------------------------------------------- */
 
   function sanitizeXmlText(str) {
-    // Strip invalid XML 1.0 control characters while preserving tab, LF, CR and all Unicode/Vietnamese
     return String(str || "").replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
   }
 
@@ -644,13 +774,11 @@
 
     if (rawItems.length === 0) return [];
 
-    // Sort top-to-bottom (higher Y first), then left-to-right
     rawItems.sort((a, b) => {
       if (Math.abs(b.y - a.y) > 2.5) return b.y - a.y;
       return a.x - b.x;
     });
 
-    // Cluster into lines based on Y proximity
     const lines = [];
     for (const item of rawItems) {
       const tol = Math.max(2.6, item.fontSize * 0.36);
@@ -670,7 +798,6 @@
       targetLine.items.push(item);
     }
 
-    // Normalize each line left-to-right and compute summary metrics
     const normalizedLines = [];
     for (const line of lines) {
       line.items.sort((a, b) => a.x - b.x);
@@ -694,11 +821,8 @@
           const prevEndsSpace = /\s$/.test(plainText);
           const currStartsSpace = /^\s/.test(it.str);
           if (!prevEndsSpace && !currStartsSpace) {
-            if (gap > it.fontSize * 2.3) {
-              prefix = "   ";
-            } else if (gap > it.fontSize * 0.16) {
-              prefix = " ";
-            }
+            if (gap > it.fontSize * 2.3) prefix = "   ";
+            else if (gap > it.fontSize * 0.16) prefix = " ";
           }
         }
 
@@ -763,7 +887,6 @@
 
     const maxLineWidth = Math.max(...lines.map((l) => l.width), 1);
     const listPrefixRegex = /^([•●▪◦\-*+]|(\d+|[a-zA-Z])[.)])\s+/;
-
     let currentGroup = null;
 
     const flushGroup = () => {
@@ -863,20 +986,21 @@
     return { paragraphs, isEmpty: false };
   }
 
-  async function runPdfToWord(toolState, options) {
-    const utils = S();
-    const { mode, pageRangeMode, pageRangeText, pageBreakPerPage, exactScale, outputName } = options;
+  async function runPdfToWord(options) {
+    await ensureLibrariesReadyForAction(["pdfjsLib", "docx"]);
+    const { mode, pageRangeMode, pageRangeText, pageBreakPerPage, exactScale, outputName } =
+      options;
 
-    if (!toolState.pdfJsDoc) {
+    if (!state.pdfJsDoc) {
       throw new Error("Vui lòng chọn một file PDF trước khi chuyển đổi.");
     }
 
-    const totalPages = toolState.totalPages;
+    const totalPages = state.totalPages;
     let targetPages = [];
     if (pageRangeMode === "all") {
       targetPages = Array.from({ length: totalPages }, (_, i) => i + 1);
     } else {
-      const parsed = utils.parsePageRange(pageRangeText, totalPages);
+      const parsed = parsePageRange(pageRangeText, totalPages);
       if (parsed.error) throw new Error(parsed.error);
       if (parsed.pages.length === 0) {
         throw new Error("Vui lòng nhập ít nhất một trang hợp lệ (ví dụ: 1-5).");
@@ -891,18 +1015,17 @@
     let emptyTextPagesCount = 0;
 
     if (mode === "editable") {
-      utils.setProgress(5, "Đang đọc cấu trúc văn bản PDF...");
+      setProgress(5, "Đang đọc cấu trúc văn bản PDF...");
       const pageLinesMap = new Map();
       const rawItemsForMedian = [];
 
       for (let i = 0; i < targetPages.length; i++) {
         const pageNum = targetPages[i];
-        const page = await toolState.pdfJsDoc.getPage(pageNum);
+        const page = await state.pdfJsDoc.getPage(pageNum);
         const textContent = await page.getTextContent();
         const lines = extractStructuredLines(textContent);
         pageLinesMap.set(pageNum, lines);
 
-        // Collect font sizes for global median body size estimation
         for (const it of textContent.items || []) {
           if (it && typeof it.str === "string" && it.str.trim()) {
             const t = it.transform || [11, 0, 0, 11, 0, 0];
@@ -915,8 +1038,8 @@
         if (typeof page.cleanup === "function") page.cleanup();
 
         const pct = 5 + Math.round(((i + 1) / targetPages.length) * 55);
-        utils.setProgress(pct, `Đang trích xuất chữ trang ${pageNum} (${i + 1}/${targetPages.length})...`);
-        await utils.yieldToUI();
+        setProgress(pct, `Đang trích xuất chữ trang ${pageNum} (${i + 1}/${targetPages.length})...`);
+        await yieldToUI();
       }
 
       const bodySize = computeMedianFontSize([rawItemsForMedian]);
@@ -935,7 +1058,7 @@
         }
 
         const pct = 60 + Math.round(((i + 1) / targetPages.length) * 25);
-        utils.setProgress(pct, `Đang định dạng nội dung Word (${i + 1}/${targetPages.length})...`);
+        setProgress(pct, `Đang định dạng nội dung Word (${i + 1}/${targetPages.length})...`);
       }
 
       doc = new Document({
@@ -945,7 +1068,7 @@
           {
             properties: {
               page: {
-                margin: { top: 1134, right: 1134, bottom: 1134, left: 1134 }, // ~2cm standard margins
+                margin: { top: 1134, right: 1134, bottom: 1134, left: 1134 },
               },
             },
             children: docChildren,
@@ -953,27 +1076,26 @@
         ],
       });
     } else {
-      // Exact Layout Mode: Render high-res PNG per page & place edge-to-edge inside matched Word sections
       const sections = [];
       const renderScaleBase = Number(exactScale) || 2.0;
 
       for (let i = 0; i < targetPages.length; i++) {
         const pageNum = targetPages[i];
-        utils.setProgress(
+        setProgress(
           Math.round((i / targetPages.length) * 84),
           `Đang kết xuất trang ${pageNum} độ nét cao (${i + 1}/${targetPages.length})...`
         );
 
-        const page = await toolState.pdfJsDoc.getPage(pageNum);
+        const page = await state.pdfJsDoc.getPage(pageNum);
         const vp1 = page.getViewport({ scale: 1 });
         if (typeof page.cleanup === "function") page.cleanup();
 
-        // Cap ultra-wide sheets so canvas stays within safe browser memory bounds
-        const safeScale = vp1.width * renderScaleBase > 2800
-          ? 2800 / Math.max(1, vp1.width)
-          : renderScaleBase;
+        const safeScale =
+          vp1.width * renderScaleBase > 2800
+            ? 2800 / Math.max(1, vp1.width)
+            : renderScaleBase;
 
-        const rendered = await utils.renderPdfPageToBlob(toolState.pdfJsDoc, pageNum, {
+        const rendered = await renderPdfPageToBlob(state.pdfJsDoc, pageNum, {
           scale: safeScale,
           mimeType: "image/png",
           quality: 1,
@@ -985,7 +1107,6 @@
         const ptH = rendered.pointHeight;
         const isLandscape = ptW > ptH;
 
-        // dolanmiu/docx swaps width & height internally when orientation === LANDSCAPE
         const dxaW = Math.round(ptW * 20);
         const dxaH = Math.round(ptH * 20);
         const imgPxW = Math.max(12, Math.floor(ptW * (96 / 72)) - 2);
@@ -1018,7 +1139,7 @@
           ],
         });
 
-        await utils.yieldToUI();
+        await yieldToUI();
       }
 
       doc = new Document({
@@ -1028,14 +1149,14 @@
       });
     }
 
-    utils.setProgress(90, "Đang đóng gói tệp Word (.docx)...");
-    await utils.yieldToUI();
+    setProgress(90, "Đang đóng gói tệp Word (.docx)...");
+    await yieldToUI();
 
     const docxBlob = await Packer.toBlob(doc);
-    const filename = utils.sanitizeFilename(outputName, ".docx");
-    utils.downloadBlob(docxBlob, filename);
+    const filename = sanitizeFilename(outputName, ".docx");
+    downloadBlob(docxBlob, filename);
 
-    utils.setProgress(100, "Hoàn tất! Tệp Word đã được tải xuống.", true);
+    setProgress(100, "Hoàn tất! Tệp Word đã được tải xuống.", true);
 
     return {
       filename,
@@ -1046,295 +1167,13 @@
     };
   }
 
-  /* ==========================================================================
-     TOOL 5: IMAGES -> PDF (JPG / PNG / WebP -> PDF)
-     ========================================================================== */
-
-  function getJpegExifOrientation(arrayBuffer) {
-    try {
-      const view = new DataView(arrayBuffer);
-      if (view.byteLength < 12 || view.getUint16(0, false) !== 0xffd8) return 1;
-      let offset = 2;
-      while (offset + 4 <= view.byteLength) {
-        const marker = view.getUint16(offset, false);
-        offset += 2;
-        if (marker === 0xffe1) {
-          if (offset + 8 > view.byteLength) return 1;
-          if (view.getUint32(offset + 2, false) !== 0x45786966) return 1; // "Exif"
-          const tiffStart = offset + 8;
-          const little = view.getUint16(tiffStart, false) === 0x4949;
-          const ifdOffset = view.getUint32(tiffStart + 4, little);
-          const entriesOffset = tiffStart + ifdOffset;
-          if (entriesOffset + 2 > view.byteLength) return 1;
-          const tags = view.getUint16(entriesOffset, little);
-          for (let i = 0; i < tags; i++) {
-            const entry = entriesOffset + 2 + i * 12;
-            if (entry + 12 > view.byteLength) break;
-            if (view.getUint16(entry, little) === 0x0112) {
-              return view.getUint16(entry + 8, little);
-            }
-          }
-          return 1;
-        }
-        if ((marker & 0xff00) !== 0xff00) break;
-        const size = view.getUint16(offset, false);
-        offset += size;
-      }
-    } catch (_e) {
-      // Ignore malformed EXIF
-    }
-    return 1;
-  }
-
-  function loadImageFromUrl(url) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error("Không thể đọc dữ liệu ảnh."));
-      img.src = url;
-    });
-  }
-
-  async function convertImageItemForPdf(item, pdfDoc) {
-    const utils = S();
-    const mime = (item.file.type || "").toLowerCase();
-    const ext = item.name.toLowerCase();
-    const rawBuffer = await item.file.arrayBuffer();
-
-    const isPng = mime === "image/png" || ext.endsWith(".png");
-    const isJpeg = mime === "image/jpeg" || mime === "image/jpg" || /\.jpe?g$/.test(ext);
-
-    if (isPng) {
-      try {
-        return await pdfDoc.embedPng(rawBuffer);
-      } catch (_err) {
-        // Fallback to canvas re-encoding if unusual PNG chunk fails
-      }
-    }
-
-    if (isJpeg && getJpegExifOrientation(rawBuffer) === 1) {
-      try {
-        return await pdfDoc.embedJpg(rawBuffer);
-      } catch (_err) {
-        // Fallback to canvas (e.g. CMYK or uncommon JPEG encoding)
-      }
-    }
-
-    // Handle WebP, EXIF-rotated JPEGs, or non-standard color profiles via Canvas
-    const img = await loadImageFromUrl(item.previewUrl);
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, img.naturalWidth || item.width);
-    canvas.height = Math.max(1, img.naturalHeight || item.height);
-    const ctx = canvas.getContext("2d");
-    const outMime = isJpeg ? "image/jpeg" : "image/png";
-    if (outMime === "image/jpeg") {
-      ctx.fillStyle = "#FFFFFF";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-    }
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-    try {
-      // Preserve PNG alpha for WebP/PNG; use high-quality JPEG for opaque photos
-      const blob = await utils.canvasToBlob(canvas, outMime, 0.92);
-      const bytes = await blob.arrayBuffer();
-      return outMime === "image/jpeg"
-        ? await pdfDoc.embedJpg(bytes)
-        : await pdfDoc.embedPng(bytes);
-    } finally {
-      canvas.width = 0;
-      canvas.height = 0;
-    }
-  }
-
-  async function readImageMetadata(file) {
-    const utils = S();
-    const previewUrl = utils.trackObjectUrl(URL.createObjectURL(file));
-    try {
-      const img = await loadImageFromUrl(previewUrl);
-      return {
-        id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        file,
-        name: file.name,
-        size: file.size,
-        width: img.naturalWidth || 800,
-        height: img.naturalHeight || 600,
-        previewUrl,
-      };
-    } catch (err) {
-      utils.revokeTrackedUrl(previewUrl);
-      throw new Error(`"${file.name}": Tệp ảnh không hợp lệ hoặc bị hỏng.`);
-    }
-  }
-
-  async function runImagesToPdf(items, options) {
-    const utils = S();
-    const { paperSize, orientation, marginMode, outputName } = options;
-
-    if (!items || items.length === 0) {
-      throw new Error("Vui lòng chọn ít nhất một tệp ảnh (JPG, PNG, WebP).");
-    }
-
-    const marginMap = { none: 0, small: 20, medium: 42 };
-    const margin = marginMap[marginMode] ?? 20;
-
-    const pdfDoc = await global.PDFLib.PDFDocument.create();
-
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-      utils.setProgress(
-        Math.round((i / items.length) * 88),
-        `Đang xử lý ảnh ${i + 1}/${items.length}: ${item.name}`
-      );
-
-      const embedded = await convertImageItemForPdf(item, pdfDoc);
-      const imgDims = embedded.scale(1);
-
-      let pageW;
-      let pageH;
-
-      if (paperSize === "a4") {
-        // Standard A4 in PDF points (595.28 x 841.89)
-        pageW = orientation === "landscape" ? 841.89 : 595.28;
-        pageH = orientation === "landscape" ? 595.28 : 841.89;
-      } else {
-        // Fit exactly to image size (convert 96dpi-ish px -> 72dpi PDF points, capped sensibly)
-        const ptW = imgDims.width * 0.75;
-        const ptH = imgDims.height * 0.75;
-        pageW = ptW + margin * 2;
-        pageH = ptH + margin * 2;
-      }
-
-      const page = pdfDoc.addPage([pageW, pageH]);
-      const availW = Math.max(10, pageW - margin * 2);
-      const availH = Math.max(10, pageH - margin * 2);
-
-      const fitScale = Math.min(availW / imgDims.width, availH / imgDims.height);
-      const drawW = imgDims.width * fitScale;
-      const drawH = imgDims.height * fitScale;
-
-      page.drawImage(embedded, {
-        x: (pageW - drawW) / 2,
-        y: (pageH - drawH) / 2,
-        width: drawW,
-        height: drawH,
-      });
-
-      await utils.yieldToUI();
-    }
-
-    utils.setProgress(93, "Đang tạo tệp PDF hoàn chỉnh...");
-    const pdfBytes = await pdfDoc.save();
-    const pdfBlob = new Blob([pdfBytes], { type: "application/pdf" });
-    const filename = utils.sanitizeFilename(outputName, ".pdf");
-    utils.downloadBlob(pdfBlob, filename);
-
-    utils.setProgress(100, "Hoàn tất! Tệp PDF đã được tải xuống.", true);
-    return { filename, size: pdfBlob.size, pageCount: items.length };
-  }
-
-  /* ==========================================================================
-     TOOL 6: PDF -> IMAGES (PNG / JPG + ZIP)
-     ========================================================================== */
-
-  async function exportSinglePdfPageImage(pdfJsDoc, pageNumber, options) {
-    const utils = S();
-    const { format, scale, baseName } = options;
-    const isPng = format === "png";
-    const mimeType = isPng ? "image/png" : "image/jpeg";
-    const quality = isPng ? 1 : 0.92;
-
-    const rendered = await utils.renderPdfPageToBlob(pdfJsDoc, pageNumber, {
-      scale: Number(scale) || 1.5,
-      mimeType,
-      quality,
-      background: "#FFFFFF",
-    });
-
-    const padded = String(pageNumber).padStart(3, "0");
-    const filename = `${utils.stripExtension(baseName || "trang")}_trang_${padded}.${format}`;
-    utils.downloadBlob(rendered.blob, filename);
-    return { filename, size: rendered.blob.size };
-  }
-
-  async function runPdfToAllImagesZip(toolState, options) {
-    const utils = S();
-    const { format, scale, outputName } = options;
-
-    if (!toolState.pdfJsDoc) {
-      throw new Error("Vui lòng chọn file PDF trước khi chuyển đổi.");
-    }
-
-    const total = toolState.totalPages;
-    const isPng = format === "png";
-    const mimeType = isPng ? "image/png" : "image/jpeg";
-    const quality = isPng ? 1 : 0.92;
-    const zip = new global.JSZip();
-    const prefix = utils.stripExtension(outputName || toolState.fileName || "pdf_anh");
-
-    for (let pageNum = 1; pageNum <= total; pageNum++) {
-      utils.setProgress(
-        Math.round(((pageNum - 1) / total) * 86),
-        `Đang xuất trang ${pageNum}/${total} sang ${format.toUpperCase()}...`
-      );
-
-      const rendered = await utils.renderPdfPageToBlob(toolState.pdfJsDoc, pageNum, {
-        scale: Number(scale) || 1.5,
-        mimeType,
-        quality,
-        background: "#FFFFFF",
-      });
-
-      const padded = String(pageNum).padStart(3, "0");
-      zip.file(`${prefix}_trang_${padded}.${format}`, rendered.blob);
-      await utils.yieldToUI();
-    }
-
-    utils.setProgress(90, "Đang đóng gói tất cả ảnh vào tệp .ZIP...");
-    const zipBlob = await zip.generateAsync(
-      { type: "blob", compression: "STORE" },
-      (meta) => {
-        const pct = 90 + Math.round((meta.percent / 100) * 9);
-        utils.setProgress(pct, `Đang nén tệp ZIP (${Math.round(meta.percent)}%)...`);
-      }
-    );
-
-    const filename = utils.sanitizeFilename(outputName, ".zip");
-    utils.downloadBlob(zipBlob, filename);
-    utils.setProgress(100, "Hoàn tất! Tệp ZIP chứa toàn bộ ảnh đã được tải xuống.", true);
-
-    return { filename, size: zipBlob.size, pageCount: total };
-  }
-
-  global.PDFToolsConvert = {
-    runPdfToWord,
-    readImageMetadata,
-    runImagesToPdf,
-    exportSinglePdfPageImage,
-    runPdfToAllImagesZip,
-  };
-})(window);
-
-/* ==========================================================================
-   PDF Studio Pro — PDF Manipulation Tools
-   Tool 2: Merge PDF
-   Tool 3: Split / Extract PDF
-   Tool 4: Organize, Rotate & Delete Pages
-   Tool 7: Page Numbers & Watermark
-   ========================================================================== */
-
-(function (global) {
-  "use strict";
-
-  const S = () => global.PDFStudio;
-
-  /* ==========================================================================
-     TOOL 2: MERGE MULTIPLE PDFs
-     ========================================================================== */
+  /* --------------------------------------------------------------------------
+     6. Tool 2: Merge PDF
+     -------------------------------------------------------------------------- */
 
   async function inspectPdfForMerge(file) {
-    const utils = S();
-    const arrayBuffer = await utils.readFileAsArrayBuffer(file);
-    const pdfDoc = await utils.openPdfWithPdfLib(arrayBuffer, file.name);
+    const arrayBuffer = await file.arrayBuffer();
+    const pdfDoc = await openPdfWithPdfLib(arrayBuffer, file.name);
     const pageCount = pdfDoc.getPageCount();
 
     if (pageCount === 0) {
@@ -1352,7 +1191,7 @@
   }
 
   async function runMergePdf(pdfItems, outputName) {
-    const utils = S();
+    await ensureLibrariesReadyForAction(["PDFLib"]);
     if (!pdfItems || pdfItems.length < 2) {
       throw new Error("Vui lòng tải lên ít nhất 2 file PDF để gộp lại.");
     }
@@ -1363,28 +1202,26 @@
 
     for (let i = 0; i < pdfItems.length; i++) {
       const item = pdfItems[i];
-      utils.setProgress(
+      setProgress(
         Math.round((i / pdfItems.length) * 85),
         `Đang gộp tệp ${i + 1}/${pdfItems.length}: ${item.name}...`
       );
 
-      const srcDoc = await utils.openPdfWithPdfLib(item.arrayBuffer, item.name);
+      const srcDoc = await openPdfWithPdfLib(item.arrayBuffer, item.name);
       const indices = srcDoc.getPageIndices();
       const copiedPages = await mergedPdf.copyPages(srcDoc, indices);
-      for (const page of copiedPages) {
-        mergedPdf.addPage(page);
-      }
+      for (const page of copiedPages) mergedPdf.addPage(page);
       totalPagesMerged += copiedPages.length;
-      await utils.yieldToUI();
+      await yieldToUI();
     }
 
-    utils.setProgress(90, "Đang xuất file PDF đã gộp...");
+    setProgress(90, "Đang xuất file PDF đã gộp...");
     const mergedBytes = await mergedPdf.save();
     const pdfBlob = new Blob([mergedBytes], { type: "application/pdf" });
-    const filename = utils.sanitizeFilename(outputName, ".pdf");
-    utils.downloadBlob(pdfBlob, filename);
+    const filename = sanitizeFilename(outputName, ".pdf");
+    downloadBlob(pdfBlob, filename);
 
-    utils.setProgress(100, "Hoàn tất! Đã gộp thành công file PDF.", true);
+    setProgress(100, "Hoàn tất! Đã gộp thành công file PDF.", true);
     return {
       filename,
       size: pdfBlob.size,
@@ -1393,15 +1230,17 @@
     };
   }
 
-  /* ==========================================================================
-     TOOL 3: SPLIT / EXTRACT PDF PAGES
-     ========================================================================== */
+  /* --------------------------------------------------------------------------
+     7. Tool 3: Split / Extract PDF Pages
+     -------------------------------------------------------------------------- */
 
-  async function runSplitPdf(toolState, options) {
-    const utils = S();
+  async function runSplitPdf(options) {
     const { selectedPages, exportMode, outputName } = options;
+    await ensureLibrariesReadyForAction(
+      exportMode === "zip_pages" ? ["PDFLib", "JSZip"] : ["PDFLib"]
+    );
 
-    if (!toolState.arrayBuffer) {
+    if (!state.arrayBuffer) {
       throw new Error("Vui lòng chọn một file PDF trước.");
     }
     if (!selectedPages || selectedPages.length === 0) {
@@ -1409,7 +1248,7 @@
     }
 
     const sortedPages = Array.from(new Set(selectedPages)).sort((a, b) => a - b);
-    const srcPdf = await utils.openPdfWithPdfLib(toolState.arrayBuffer, toolState.fileName);
+    const srcPdf = await openPdfWithPdfLib(state.arrayBuffer, state.fileName);
     const total = srcPdf.getPageCount();
 
     for (const p of sortedPages) {
@@ -1421,31 +1260,28 @@
     const { PDFDocument } = global.PDFLib;
 
     if (exportMode === "single_pdf") {
-      utils.setProgress(25, `Đang trích xuất ${sortedPages.length} trang vào 1 file PDF...`);
+      setProgress(25, `Đang trích xuất ${sortedPages.length} trang vào 1 file PDF...`);
       const outDoc = await PDFDocument.create();
       const zeroIndices = sortedPages.map((p) => p - 1);
       const copiedPages = await outDoc.copyPages(srcPdf, zeroIndices);
-      for (const page of copiedPages) {
-        outDoc.addPage(page);
-      }
+      for (const page of copiedPages) outDoc.addPage(page);
 
-      utils.setProgress(85, "Đang lưu file PDF đầu ra...");
+      setProgress(85, "Đang lưu file PDF đầu ra...");
       const outBytes = await outDoc.save();
       const blob = new Blob([outBytes], { type: "application/pdf" });
-      const filename = utils.sanitizeFilename(outputName, ".pdf");
-      utils.downloadBlob(blob, filename);
+      const filename = sanitizeFilename(outputName, ".pdf");
+      downloadBlob(blob, filename);
 
-      utils.setProgress(100, "Hoàn tất! Đã trích xuất file PDF.", true);
+      setProgress(100, "Hoàn tất! Đã trích xuất file PDF.", true);
       return { filename, size: blob.size, pageCount: sortedPages.length, exportMode };
     }
 
-    // Separate PDFs packaged in .ZIP
     const zip = new global.JSZip();
-    const prefix = utils.stripExtension(outputName || toolState.fileName || "tach_trang");
+    const prefix = stripExtension(outputName || state.fileName || "tach_trang");
 
     for (let i = 0; i < sortedPages.length; i++) {
       const pageNum = sortedPages[i];
-      utils.setProgress(
+      setProgress(
         Math.round((i / sortedPages.length) * 85),
         `Đang tách trang ${pageNum} (${i + 1}/${sortedPages.length})...`
       );
@@ -1457,32 +1293,32 @@
 
       const padded = String(pageNum).padStart(3, "0");
       zip.file(`${prefix}_trang_${padded}.pdf`, bytes);
-      await utils.yieldToUI();
+      await yieldToUI();
     }
 
-    utils.setProgress(90, "Đang nén các file PDF lẻ thành tệp .ZIP...");
+    setProgress(90, "Đang nén các file PDF lẻ thành tệp .ZIP...");
     const zipBlob = await zip.generateAsync(
       { type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } },
       (meta) => {
         const pct = 90 + Math.round((meta.percent / 100) * 9);
-        utils.setProgress(pct, `Đang nén tệp ZIP (${Math.round(meta.percent)}%)...`);
+        setProgress(pct, `Đang nén tệp ZIP (${Math.round(meta.percent)}%)...`);
       }
     );
 
-    const filename = utils.sanitizeFilename(outputName, ".zip");
-    utils.downloadBlob(zipBlob, filename);
-    utils.setProgress(100, "Hoàn tất! Tệp ZIP chứa các trang PDF đã được tải xuống.", true);
+    const filename = sanitizeFilename(outputName, ".zip");
+    downloadBlob(zipBlob, filename);
+    setProgress(100, "Hoàn tất! Tệp ZIP chứa các trang PDF đã được tải xuống.", true);
 
     return { filename, size: zipBlob.size, pageCount: sortedPages.length, exportMode };
   }
 
-  /* ==========================================================================
-     TOOL 4: ORGANIZE, ROTATE & DELETE PAGES
-     ========================================================================== */
+  /* --------------------------------------------------------------------------
+     8. Tool 4: Organize, Rotate & Delete Pages
+     -------------------------------------------------------------------------- */
 
-  async function runOrganizePdf(toolState, pageItems, outputName) {
-    const utils = S();
-    if (!toolState.arrayBuffer) {
+  async function runOrganizePdf(pageItems, outputName) {
+    await ensureLibrariesReadyForAction(["PDFLib"]);
+    if (!state.arrayBuffer) {
       throw new Error("Vui lòng chọn một file PDF trước.");
     }
     if (!pageItems || pageItems.length === 0) {
@@ -1490,13 +1326,13 @@
     }
 
     const { PDFDocument, degrees } = global.PDFLib;
-    utils.setProgress(15, "Đang đọc dữ liệu PDF gốc...");
+    setProgress(15, "Đang đọc dữ liệu PDF gốc...");
 
-    const srcPdf = await utils.openPdfWithPdfLib(toolState.arrayBuffer, toolState.fileName);
+    const srcPdf = await openPdfWithPdfLib(state.arrayBuffer, state.fileName);
     const outPdf = await PDFDocument.create();
     const indices = pageItems.map((item) => item.originalIndex);
 
-    utils.setProgress(40, `Đang sắp xếp và xoay ${pageItems.length} trang...`);
+    setProgress(40, `Đang sắp xếp và xoay ${pageItems.length} trang...`);
     const copiedPages = await outPdf.copyPages(srcPdf, indices);
 
     for (let i = 0; i < copiedPages.length; i++) {
@@ -1504,52 +1340,290 @@
       const delta = pageItems[i].rotationDelta || 0;
       if (delta !== 0) {
         const existingAngle = (page.getRotation() && page.getRotation().angle) || 0;
-        const nextAngle = ((existingAngle + delta) % 360 + 360) % 360;
+        const nextAngle = (((existingAngle + delta) % 360) + 360) % 360;
         page.setRotation(degrees(nextAngle));
       }
       outPdf.addPage(page);
 
       if (i % 15 === 0) {
         const pct = 40 + Math.round(((i + 1) / copiedPages.length) * 45);
-        utils.setProgress(pct, `Đang áp dụng thay đổi trang ${i + 1}/${copiedPages.length}...`);
-        await utils.yieldToUI();
+        setProgress(pct, `Đang áp dụng thay đổi trang ${i + 1}/${copiedPages.length}...`);
+        await yieldToUI();
       }
     }
 
-    utils.setProgress(90, "Đang tạo tệp PDF mới...");
+    setProgress(90, "Đang tạo tệp PDF mới...");
     const bytes = await outPdf.save();
     const blob = new Blob([bytes], { type: "application/pdf" });
-    const filename = utils.sanitizeFilename(outputName, ".pdf");
-    utils.downloadBlob(blob, filename);
+    const filename = sanitizeFilename(outputName, ".pdf");
+    downloadBlob(blob, filename);
 
-    utils.setProgress(100, "Hoàn tất! Tệp PDF mới đã được tải xuống.", true);
+    setProgress(100, "Hoàn tất! Tệp PDF mới đã được tải xuống.", true);
     return { filename, size: blob.size, pageCount: pageItems.length };
   }
 
-  /* ==========================================================================
-     TOOL 7: PAGE NUMBERS & WATERMARK
-     ========================================================================== */
+  /* --------------------------------------------------------------------------
+     9. Tool 5: Images -> PDF (JPG / PNG / WebP)
+     -------------------------------------------------------------------------- */
+
+  function getJpegExifOrientation(arrayBuffer) {
+    try {
+      const view = new DataView(arrayBuffer);
+      if (view.byteLength < 12 || view.getUint16(0, false) !== 0xffd8) return 1;
+      let offset = 2;
+      while (offset + 4 <= view.byteLength) {
+        const marker = view.getUint16(offset, false);
+        offset += 2;
+        if (marker === 0xffe1) {
+          if (offset + 8 > view.byteLength) return 1;
+          if (view.getUint32(offset + 2, false) !== 0x45786966) return 1;
+          const tiffStart = offset + 8;
+          const little = view.getUint16(tiffStart, false) === 0x4949;
+          const ifdOffset = view.getUint32(tiffStart + 4, little);
+          const entriesOffset = tiffStart + ifdOffset;
+          if (entriesOffset + 2 > view.byteLength) return 1;
+          const tags = view.getUint16(entriesOffset, little);
+          for (let i = 0; i < tags; i++) {
+            const entry = entriesOffset + 2 + i * 12;
+            if (entry + 12 > view.byteLength) break;
+            if (view.getUint16(entry, little) === 0x0112) {
+              return view.getUint16(entry + 8, little);
+            }
+          }
+          return 1;
+        }
+        if ((marker & 0xff00) !== 0xff00) break;
+        offset += view.getUint16(offset, false);
+      }
+    } catch (_e) {
+      // Ignore malformed EXIF
+    }
+    return 1;
+  }
+
+  function loadImageFromUrl(url) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("Không thể đọc dữ liệu ảnh."));
+      img.src = url;
+    });
+  }
+
+  async function readImageMetadata(file) {
+    const previewUrl = trackObjectUrl(URL.createObjectURL(file));
+    try {
+      const img = await loadImageFromUrl(previewUrl);
+      return {
+        id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        file,
+        name: file.name,
+        size: file.size,
+        width: img.naturalWidth || 800,
+        height: img.naturalHeight || 600,
+        previewUrl,
+      };
+    } catch (_err) {
+      revokeTrackedUrl(previewUrl);
+      throw new Error(`"${file.name}": Tệp ảnh không hợp lệ hoặc bị hỏng.`);
+    }
+  }
+
+  async function convertImageItemForPdf(item, pdfDoc) {
+    const mime = (item.file.type || "").toLowerCase();
+    const ext = item.name.toLowerCase();
+    const rawBuffer = await item.file.arrayBuffer();
+
+    const isPng = mime === "image/png" || ext.endsWith(".png");
+    const isJpeg = mime === "image/jpeg" || mime === "image/jpg" || /\.jpe?g$/.test(ext);
+
+    if (isPng) {
+      try {
+        return await pdfDoc.embedPng(rawBuffer);
+      } catch (_err) {
+        // Fallback to canvas
+      }
+    }
+
+    if (isJpeg && getJpegExifOrientation(rawBuffer) === 1) {
+      try {
+        return await pdfDoc.embedJpg(rawBuffer);
+      } catch (_err) {
+        // Fallback to canvas
+      }
+    }
+
+    const img = await loadImageFromUrl(item.previewUrl);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, img.naturalWidth || item.width);
+    canvas.height = Math.max(1, img.naturalHeight || item.height);
+    const ctx = canvas.getContext("2d");
+
+    const outMime = isJpeg ? "image/jpeg" : "image/png";
+    if (outMime === "image/jpeg") {
+      ctx.fillStyle = "#FFFFFF";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    try {
+      const blob = await canvasToBlob(canvas, outMime, 0.92);
+      const bytes = await blob.arrayBuffer();
+      return outMime === "image/jpeg"
+        ? await pdfDoc.embedJpg(bytes)
+        : await pdfDoc.embedPng(bytes);
+    } finally {
+      canvas.width = 0;
+      canvas.height = 0;
+    }
+  }
+
+  async function runImagesToPdf(items, options) {
+    await ensureLibrariesReadyForAction(["PDFLib"]);
+    const { paperSize, orientation, marginMode, outputName } = options;
+
+    if (!items || items.length === 0) {
+      throw new Error("Vui lòng chọn ít nhất một tệp ảnh (JPG, PNG, WebP).");
+    }
+
+    const marginMap = { none: 0, small: 20, medium: 42 };
+    const margin = marginMap[marginMode] ?? 20;
+    const pdfDoc = await global.PDFLib.PDFDocument.create();
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      setProgress(
+        Math.round((i / items.length) * 88),
+        `Đang xử lý ảnh ${i + 1}/${items.length}: ${item.name}`
+      );
+
+      const embedded = await convertImageItemForPdf(item, pdfDoc);
+      const imgDims = embedded.scale(1);
+
+      let pageW;
+      let pageH;
+
+      if (paperSize === "a4") {
+        pageW = orientation === "landscape" ? 841.89 : 595.28;
+        pageH = orientation === "landscape" ? 595.28 : 841.89;
+      } else {
+        pageW = imgDims.width * 0.75 + margin * 2;
+        pageH = imgDims.height * 0.75 + margin * 2;
+      }
+
+      const page = pdfDoc.addPage([pageW, pageH]);
+      const availW = Math.max(10, pageW - margin * 2);
+      const availH = Math.max(10, pageH - margin * 2);
+      const fitScale = Math.min(availW / imgDims.width, availH / imgDims.height);
+      const drawW = imgDims.width * fitScale;
+      const drawH = imgDims.height * fitScale;
+
+      page.drawImage(embedded, {
+        x: (pageW - drawW) / 2,
+        y: (pageH - drawH) / 2,
+        width: drawW,
+        height: drawH,
+      });
+
+      await yieldToUI();
+    }
+
+    setProgress(93, "Đang tạo tệp PDF hoàn chỉnh...");
+    const pdfBytes = await pdfDoc.save();
+    const pdfBlob = new Blob([pdfBytes], { type: "application/pdf" });
+    const filename = sanitizeFilename(outputName, ".pdf");
+    downloadBlob(pdfBlob, filename);
+
+    setProgress(100, "Hoàn tất! Tệp PDF đã được tải xuống.", true);
+    return { filename, size: pdfBlob.size, pageCount: items.length };
+  }
+
+  /* --------------------------------------------------------------------------
+     10. Tool 6: PDF -> Images (PNG / JPG + ZIP)
+     -------------------------------------------------------------------------- */
+
+  async function exportSinglePdfPageImage(pdfJsDoc, pageNumber, options) {
+    await ensureLibrariesReadyForAction(["pdfjsLib"]);
+    const { format, scale, baseName } = options;
+    const isPng = format === "png";
+
+    const rendered = await renderPdfPageToBlob(pdfJsDoc, pageNumber, {
+      scale: Number(scale) || 1.5,
+      mimeType: isPng ? "image/png" : "image/jpeg",
+      quality: isPng ? 1 : 0.92,
+      background: "#FFFFFF",
+    });
+
+    const padded = String(pageNumber).padStart(3, "0");
+    const filename = `${stripExtension(baseName || "trang")}_trang_${padded}.${format}`;
+    downloadBlob(rendered.blob, filename);
+    return { filename, size: rendered.blob.size };
+  }
+
+  async function runPdfToAllImagesZip(options) {
+    await ensureLibrariesReadyForAction(["pdfjsLib", "JSZip"]);
+    const { format, scale, outputName } = options;
+
+    if (!state.pdfJsDoc) {
+      throw new Error("Vui lòng chọn file PDF trước khi chuyển đổi.");
+    }
+
+    const total = state.totalPages;
+    const isPng = format === "png";
+    const zip = new global.JSZip();
+    const prefix = stripExtension(outputName || state.fileName || "pdf_anh");
+
+    for (let pageNum = 1; pageNum <= total; pageNum++) {
+      setProgress(
+        Math.round(((pageNum - 1) / total) * 86),
+        `Đang xuất trang ${pageNum}/${total} sang ${format.toUpperCase()}...`
+      );
+
+      const rendered = await renderPdfPageToBlob(state.pdfJsDoc, pageNum, {
+        scale: Number(scale) || 1.5,
+        mimeType: isPng ? "image/png" : "image/jpeg",
+        quality: isPng ? 1 : 0.92,
+        background: "#FFFFFF",
+      });
+
+      const padded = String(pageNum).padStart(3, "0");
+      zip.file(`${prefix}_trang_${padded}.${format}`, rendered.blob);
+      await yieldToUI();
+    }
+
+    setProgress(90, "Đang đóng gói tất cả ảnh vào tệp .ZIP...");
+    const zipBlob = await zip.generateAsync(
+      { type: "blob", compression: "STORE" },
+      (meta) => {
+        const pct = 90 + Math.round((meta.percent / 100) * 9);
+        setProgress(pct, `Đang nén tệp ZIP (${Math.round(meta.percent)}%)...`);
+      }
+    );
+
+    const filename = sanitizeFilename(outputName, ".zip");
+    downloadBlob(zipBlob, filename);
+    setProgress(100, "Hoàn tất! Tệp ZIP chứa toàn bộ ảnh đã được tải xuống.", true);
+
+    return { filename, size: zipBlob.size, pageCount: total };
+  }
+
+  /* --------------------------------------------------------------------------
+     11. Tool 7: Page Numbers & Watermark
+     -------------------------------------------------------------------------- */
 
   function mapVisualPointToRawPdf(vx, vy, visualAngleDeg, rawW, rawH, pageRotAngle) {
     const rot = ((pageRotAngle % 360) + 360) % 360;
-    if (rot === 90) {
-      return { x: rawW - vy, y: vx, angle: visualAngleDeg + 90 };
-    }
-    if (rot === 180) {
-      return { x: rawW - vx, y: rawH - vy, angle: visualAngleDeg + 180 };
-    }
-    if (rot === 270) {
-      return { x: vy, y: rawH - vx, angle: visualAngleDeg + 270 };
-    }
+    if (rot === 90) return { x: rawW - vy, y: vx, angle: visualAngleDeg + 90 };
+    if (rot === 180) return { x: rawW - vx, y: rawH - vy, angle: visualAngleDeg + 180 };
+    if (rot === 270) return { x: vy, y: rawH - vx, angle: visualAngleDeg + 270 };
     return { x: vx, y: vy, angle: visualAngleDeg };
   }
 
   function getVisualPageDimensions(rawW, rawH, pageRotAngle) {
     const rot = ((pageRotAngle % 360) + 360) % 360;
-    if (rot === 90 || rot === 270) {
-      return { width: rawH, height: rawW };
-    }
-    return { width: rawW, height: rawH };
+    return rot === 90 || rot === 270
+      ? { width: rawH, height: rawW }
+      : { width: rawW, height: rawH };
   }
 
   function canEncodeWithFont(font, text) {
@@ -1561,8 +1635,8 @@
     }
   }
 
-  async function runWatermarkAndNumbers(toolState, options) {
-    const utils = S();
+  async function runWatermarkAndNumbers(options) {
+    await ensureLibrariesReadyForAction(["PDFLib"]);
     const {
       enableNumbers,
       numberFormat,
@@ -1575,7 +1649,7 @@
       outputName,
     } = options;
 
-    if (!toolState.arrayBuffer) {
+    if (!state.arrayBuffer) {
       throw new Error("Vui lòng chọn một file PDF trước.");
     }
     if (!enableNumbers && !enableWatermark) {
@@ -1586,30 +1660,24 @@
     }
 
     const { degrees, rgb } = global.PDFLib;
-    utils.setProgress(8, "Đang tải tài liệu PDF và chuẩn bị phông chữ tiếng Việt...");
+    setProgress(8, "Đang tải tài liệu PDF và chuẩn bị phông chữ tiếng Việt...");
 
-    const pdfDoc = await utils.openPdfWithPdfLib(toolState.arrayBuffer, toolState.fileName);
-    const { font } = await utils.embedVietnameseFont(pdfDoc);
+    const pdfDoc = await openPdfWithPdfLib(state.arrayBuffer, state.fileName);
+    const { font } = await embedVietnameseFont(pdfDoc);
     const pages = pdfDoc.getPages();
     const totalPages = pages.length;
 
     const wmText = String(watermarkText || "").trim();
     const wmFontSize = Math.max(12, Math.min(120, Number(watermarkSize) || 48));
     const wmOpacity = Math.max(0.05, Math.min(0.9, Number(watermarkOpacity) || 0.25));
-    const wmColorRgb = utils.hexToRgbNormalized(watermarkColor || "#64748B");
+    const wmColorRgb = hexToRgbNormalized(watermarkColor || "#64748B");
     const numFontSize = 11;
-    const numColorRgb = utils.hexToRgbNormalized("#1E293B");
+    const numColorRgb = hexToRgbNormalized("#1E293B");
 
-    // Pre-prepare PNG fallback if custom TTF cannot encode characters (e.g., offline or emoji)
     let embeddedWmPng = null;
     let wmPngMeta = null;
     if (enableWatermark && !canEncodeWithFont(font, wmText)) {
-      wmPngMeta = await utils.renderTextToPngBuffer(
-        wmText,
-        wmFontSize,
-        watermarkColor || "#64748B",
-        true
-      );
+      wmPngMeta = await renderTextToPngBuffer(wmText, wmFontSize, watermarkColor || "#64748B", true);
       embeddedWmPng = await pdfDoc.embedPng(wmPngMeta.bytes);
     }
 
@@ -1620,13 +1688,11 @@
       const rotAngle = (page.getRotation() && page.getRotation().angle) || 0;
       const visual = getVisualPageDimensions(rawW, rawH, rotAngle);
 
-      // 1. Watermark
       if (enableWatermark) {
-        const visualAngle = 45; // Bottom-left to top-right diagonal (matches CSS -45deg preview)
+        const visualAngle = 45;
         const rad = (visualAngle * Math.PI) / 180;
 
         if (!embeddedWmPng) {
-          // Scale watermark gracefully if page is smaller than A4
           const textW = font.widthOfTextAtSize(wmText, wmFontSize);
           const maxDiagSpan = Math.hypot(visual.width, visual.height) * 0.72;
           const effSize = textW > maxDiagSpan ? wmFontSize * (maxDiagSpan / textW) : wmFontSize;
@@ -1635,12 +1701,9 @@
 
           const dx = (finalW / 2) * Math.cos(rad) - (finalH / 2) * Math.sin(rad);
           const dy = (finalW / 2) * Math.sin(rad) + (finalH / 2) * Math.cos(rad);
-          const originVX = visual.width / 2 - dx;
-          const originVY = visual.height / 2 - dy;
-
           const mapped = mapVisualPointToRawPdf(
-            originVX,
-            originVY,
+            visual.width / 2 - dx,
+            visual.height / 2 - dy,
             visualAngle,
             rawW,
             rawH,
@@ -1664,12 +1727,9 @@
 
           const dx = (drawW / 2) * Math.cos(rad) - (drawH / 2) * Math.sin(rad);
           const dy = (drawW / 2) * Math.sin(rad) + (drawH / 2) * Math.cos(rad);
-          const originVX = visual.width / 2 - dx;
-          const originVY = visual.height / 2 - dy;
-
           const mapped = mapVisualPointToRawPdf(
-            originVX,
-            originVY,
+            visual.width / 2 - dx,
+            visual.height / 2 - dy,
             visualAngle,
             rawW,
             rawH,
@@ -1687,13 +1747,9 @@
         }
       }
 
-      // 2. Page Number
       if (enableNumbers) {
         const label =
-          numberFormat === "page_of_total"
-            ? `Trang ${pageNum} / ${totalPages}`
-            : `${pageNum}`;
-
+          numberFormat === "page_of_total" ? `Trang ${pageNum} / ${totalPages}` : `${pageNum}`;
         const padX = 28;
         const padY = 22;
 
@@ -1704,7 +1760,6 @@
 
           if (numberPosition === "bottom-right") {
             vx = visual.width - labelW - padX;
-            vy = padY;
           } else if (numberPosition === "top-right") {
             vx = visual.width - labelW - padX;
             vy = visual.height - padY - numFontSize;
@@ -1721,15 +1776,13 @@
             rotate: degrees(mapped.angle),
           });
         } else {
-          // Offline/fallback PNG rendering for non-WinAnsi Vietnamese "Trang 1 / 10"
-          const numPng = await utils.renderTextToPngBuffer(label, numFontSize, "#1E293B", false);
+          const numPng = await renderTextToPngBuffer(label, numFontSize, "#1E293B", false);
           const embeddedNum = await pdfDoc.embedPng(numPng.bytes);
           let vx = (visual.width - numPng.widthPt) / 2;
           let vy = padY - 3;
 
           if (numberPosition === "bottom-right") {
             vx = visual.width - numPng.widthPt - padX;
-            vy = padY - 3;
           } else if (numberPosition === "top-right") {
             vx = visual.width - numPng.widthPt - padX;
             vy = visual.height - padY - numPng.heightPt;
@@ -1749,43 +1802,23 @@
 
       if (i % 10 === 0 || i === totalPages - 1) {
         const pct = 15 + Math.round(((i + 1) / totalPages) * 75);
-        utils.setProgress(pct, `Đang xử lý trang ${pageNum}/${totalPages}...`);
-        await utils.yieldToUI();
+        setProgress(pct, `Đang xử lý trang ${pageNum}/${totalPages}...`);
+        await yieldToUI();
       }
     }
 
-    utils.setProgress(93, "Đang lưu tệp PDF hoàn chỉnh...");
+    setProgress(93, "Đang lưu tệp PDF hoàn chỉnh...");
     const bytes = await pdfDoc.save();
     const blob = new Blob([bytes], { type: "application/pdf" });
-    const filename = utils.sanitizeFilename(outputName, ".pdf");
-    utils.downloadBlob(blob, filename);
+    const filename = sanitizeFilename(outputName, ".pdf");
+    downloadBlob(blob, filename);
 
-    utils.setProgress(100, "Hoàn tất! Tệp PDF đã được tải xuống.", true);
+    setProgress(100, "Hoàn tất! Tệp PDF đã được tải xuống.", true);
     return { filename, size: blob.size, pageCount: totalPages };
   }
 
-  global.PDFToolsPdf = {
-    inspectPdfForMerge,
-    runMergePdf,
-    runSplitPdf,
-    runOrganizePdf,
-    runWatermarkAndNumbers,
-  };
-})(window);
-
-/* ==========================================================================
-   PDF Studio Pro — Application Controller, Bento Dashboard & Split Workspace
-   ========================================================================== */
-
-(function (global) {
-  "use strict";
-
-  const S = () => global.PDFStudio;
-  const Conv = () => global.PDFToolsConvert;
-  const PdfT = () => global.PDFToolsPdf;
-
   /* --------------------------------------------------------------------------
-     Tool Definitions (7 Tools)
+     12. Tool Metadata, UI State & DOM Cache
      -------------------------------------------------------------------------- */
 
   const TOOLS = [
@@ -1898,55 +1931,43 @@
     },
   ];
 
-  /* --------------------------------------------------------------------------
-     Application State
-     -------------------------------------------------------------------------- */
-
   const state = {
     activeToolId: null,
     isProcessing: false,
     renderSessionId: 0,
 
-    // Single PDF loaded state (Tools 1, 3, 4, 6, 7)
     fileName: "",
     fileSize: 0,
     totalPages: 0,
     arrayBuffer: null,
     pdfJsDoc: null,
 
-    // Multi-file lists (Tool 2 Merge & Tool 5 Images-to-PDF)
     mergeFiles: [],
     imageItems: [],
 
-    // Tool 1 options
-    wordMode: "editable", // 'editable' | 'exact'
-    wordRangeMode: "all", // 'all' | 'custom'
+    wordMode: "editable",
+    wordRangeMode: "all",
     wordRangeText: "1-5",
     wordPageBreak: true,
     wordExactScale: "2.0",
 
-    // Tool 3 Split state
     splitSelected: new Set(),
     splitRangeText: "",
     splitRangeError: "",
-    splitExportMode: "single_pdf", // 'single_pdf' | 'zip_pages'
+    splitExportMode: "single_pdf",
 
-    // Tool 4 Organize state
-    organizePages: [], // [{ id, originalIndex, pageNumber, rotationDelta, thumbUrl }]
+    organizePages: [],
 
-    // Tool 5 Images -> PDF options
-    imgPaperSize: "a4", // 'a4' | 'fit'
-    imgOrientation: "portrait", // 'portrait' | 'landscape'
-    imgMargin: "small", // 'none' | 'small' | 'medium'
+    imgPaperSize: "a4",
+    imgOrientation: "portrait",
+    imgMargin: "small",
 
-    // Tool 6 PDF -> Images options
-    imgOutFormat: "png", // 'png' | 'jpg'
-    imgOutScale: "1.5", // '1.5' | '2.5'
+    imgOutFormat: "png",
+    imgOutScale: "1.5",
 
-    // Tool 7 Watermark & Page Numbers options
     wmEnableNumbers: true,
-    wmNumberFormat: "page_of_total", // 'number_only' | 'page_of_total'
-    wmNumberPos: "bottom-center", // 'bottom-center' | 'bottom-right' | 'top-right'
+    wmNumberFormat: "page_of_total",
+    wmNumberPos: "bottom-center",
     wmEnableWatermark: true,
     wmText: "Tài liệu lưu hành nội bộ",
     wmFontSize: 48,
@@ -1955,10 +1976,6 @@
     wmPreviewUrl: "",
     wmPreviewPagePointWidth: 595,
   };
-
-  /* --------------------------------------------------------------------------
-     DOM References
-     -------------------------------------------------------------------------- */
 
   const dom = {};
 
@@ -1994,9 +2011,18 @@
     return TOOLS.find((t) => t.id === id) || null;
   }
 
-  /* --------------------------------------------------------------------------
-     Cleanup & State Reset
-     -------------------------------------------------------------------------- */
+  function getShortPillName(toolId) {
+    const map = {
+      "pdf-to-word": "PDF → Word",
+      "merge-pdf": "Gộp PDF",
+      "split-pdf": "Tách PDF",
+      "organize-pdf": "Sắp xếp & Xoay",
+      "images-to-pdf": "Ảnh → PDF",
+      "pdf-to-images": "PDF → Ảnh",
+      "watermark-numbers": "Số trang & Watermark",
+    };
+    return map[toolId] || toolId;
+  }
 
   function resetLoadedFiles() {
     state.renderSessionId += 1;
@@ -2009,7 +2035,7 @@
       }
     }
 
-    S().revokeAllTrackedUrls();
+    revokeAllTrackedUrls();
 
     state.fileName = "";
     state.fileSize = 0;
@@ -2029,15 +2055,16 @@
       dom.resultSummaryCard.classList.add("hidden");
       dom.resultSummaryCard.innerHTML = "";
     }
-    S().setProgress(0, "Sẵn sàng xử lý", false);
+    setProgress(0, "Sẵn sàng xử lý", false);
   }
 
   /* --------------------------------------------------------------------------
-     Dashboard Rendering (Bento Grid)
+     13. Dashboard Rendering & Navigation (Zero External Library Dependency)
      -------------------------------------------------------------------------- */
 
   function renderDashboard() {
-    const utils = S();
+    if (!dom.bentoGrid) return;
+
     dom.bentoGrid.innerHTML = TOOLS.map((tool) => {
       return `
         <button
@@ -2051,11 +2078,11 @@
               <div class="tool-icon-box" style="background: ${tool.accentBg}; color: ${tool.accentColor};">
                 ${tool.iconSvg}
               </div>
-              ${tool.badge ? `<span class="tool-badge">${utils.escapeHtml(tool.badge)}</span>` : ""}
+              ${tool.badge ? `<span class="tool-badge">${escapeHtml(tool.badge)}</span>` : ""}
             </div>
             <div class="tool-card-body" style="margin-top: 16px;">
-              <h3>${utils.escapeHtml(tool.title)}</h3>
-              <p>${utils.escapeHtml(tool.shortDesc)}</p>
+              <h3>${escapeHtml(tool.title)}</h3>
+              <p>${escapeHtml(tool.shortDesc)}</p>
             </div>
           </div>
           <div class="tool-card-footer">
@@ -2073,13 +2100,9 @@
     });
   }
 
-  /* --------------------------------------------------------------------------
-     Navigation Between Dashboard & Workspace
-     -------------------------------------------------------------------------- */
-
   function showDashboard() {
     if (state.isProcessing) {
-      S().showToast("warning", "Đang xử lý", "Vui lòng đợi tiến trình hiện tại hoàn tất.");
+      showToast("warning", "Đang xử lý", "Vui lòng đợi tiến trình hiện tại hoàn tất.");
       return;
     }
     resetLoadedFiles();
@@ -2092,7 +2115,7 @@
 
   function openTool(toolId) {
     if (state.isProcessing) {
-      S().showToast("warning", "Đang xử lý", "Vui lòng đợi tiến trình hiện tại hoàn tất.");
+      showToast("warning", "Đang xử lý", "Vui lòng đợi tiến trình hiện tại hoàn tất.");
       return;
     }
     const tool = getToolById(toolId);
@@ -2105,12 +2128,11 @@
     dom.workspaceView.classList.remove("hidden");
     dom.navHomeBtn.classList.remove("is-active");
 
-    // Top bar & quick switcher
     dom.workspaceToolBadge.innerHTML = `
       <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;background:${tool.accentBg};color:${tool.accentColor};">
         ${tool.iconSvg}
       </span>
-      <span>${S().escapeHtml(tool.title)}</span>
+      <span>${escapeHtml(tool.title)}</span>
     `;
 
     dom.workspaceQuickTools.innerHTML = TOOLS.map(
@@ -2119,9 +2141,9 @@
           type="button"
           class="quick-tool-pill ${t.id === toolId ? "is-active" : ""}"
           data-switch-tool="${t.id}"
-          title="${S().escapeHtml(t.title)}"
+          title="${escapeHtml(t.title)}"
         >
-          ${S().escapeHtml(getShortPillName(t.id))}
+          ${escapeHtml(getShortPillName(t.id))}
         </button>
       `
     ).join("");
@@ -2130,7 +2152,6 @@
       pill.addEventListener("click", () => openTool(pill.getAttribute("data-switch-tool")));
     });
 
-    // Dropzone configuration
     dom.fileInput.accept = tool.accept;
     dom.fileInput.multiple = tool.multiple;
     dom.dropzoneAcceptTag.textContent = tool.acceptLabel;
@@ -2144,21 +2165,8 @@
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  function getShortPillName(toolId) {
-    const map = {
-      "pdf-to-word": "PDF → Word",
-      "merge-pdf": "Gộp PDF",
-      "split-pdf": "Tách PDF",
-      "organize-pdf": "Sắp xếp & Xoay",
-      "images-to-pdf": "Ảnh → PDF",
-      "pdf-to-images": "PDF → Ảnh",
-      "watermark-numbers": "Số trang & Watermark",
-    };
-    return map[toolId] || toolId;
-  }
-
   /* --------------------------------------------------------------------------
-     File Input & Drag-Drop Handlers
+     14. File Upload & Dropzone Handling
      -------------------------------------------------------------------------- */
 
   function hasLoadedData() {
@@ -2190,39 +2198,38 @@
   }
 
   async function handleIncomingFiles(fileList) {
-    const utils = S();
     if (!fileList || fileList.length === 0 || state.isProcessing) return;
     const files = Array.from(fileList);
     const toolId = state.activeToolId;
     if (!toolId) return;
 
     dom.resultSummaryCard.classList.add("hidden");
-    utils.setProgress(0, "Đang nạp tệp...", false);
+    setProgress(0, "Đang nạp tệp...", false);
 
     try {
       if (toolId === "merge-pdf") {
         let added = 0;
         for (const f of files) {
           if (!isPdfFile(f)) {
-            utils.showToast("error", "Sai định dạng", `"${f.name}" không phải file PDF.`);
+            showToast("error", "Sai định dạng", `"${f.name}" không phải file PDF.`);
             continue;
           }
           try {
-            const info = await PdfT().inspectPdfForMerge(f);
+            const info = await inspectPdfForMerge(f);
             state.mergeFiles.push(info);
             added++;
           } catch (err) {
-            utils.showToast("error", "Không thể đọc PDF", err.message);
+            showToast("error", "Không thể đọc PDF", err.message);
           }
         }
         if (added > 0) {
-          utils.showToast("success", "Đã thêm tệp PDF", `Đã nạp ${added} tệp vào danh sách gộp.`);
+          showToast("success", "Đã thêm tệp PDF", `Đã nạp ${added} tệp vào danh sách gộp.`);
         }
         updateOutputFilenameDefault();
         renderWorkspaceView();
         renderSettingsPanel();
         updatePrimaryActionState();
-        utils.setProgress(0, "Sẵn sàng gộp PDF", false);
+        setProgress(0, "Sẵn sàng gộp PDF", false);
         return;
       }
 
@@ -2230,7 +2237,7 @@
         let added = 0;
         for (const f of files) {
           if (!isSupportedImageFile(f)) {
-            utils.showToast(
+            showToast(
               "error",
               "Định dạng ảnh chưa hỗ trợ",
               `"${f.name}" không phải ảnh JPG, PNG hoặc WebP.`
@@ -2238,39 +2245,38 @@
             continue;
           }
           try {
-            const meta = await Conv().readImageMetadata(f);
+            const meta = await readImageMetadata(f);
             state.imageItems.push(meta);
             added++;
           } catch (err) {
-            utils.showToast("error", "Lỗi đọc ảnh", err.message);
+            showToast("error", "Lỗi đọc ảnh", err.message);
           }
         }
         if (added > 0) {
-          utils.showToast("success", "Đã thêm ảnh", `Đã nạp ${added} ảnh vào danh sách.`);
+          showToast("success", "Đã thêm ảnh", `Đã nạp ${added} ảnh vào danh sách.`);
         }
         updateOutputFilenameDefault();
         renderWorkspaceView();
         renderSettingsPanel();
         updatePrimaryActionState();
-        utils.setProgress(0, "Sẵn sàng tạo PDF", false);
+        setProgress(0, "Sẵn sàng tạo PDF", false);
         return;
       }
 
-      // Single-PDF tools: take the first file
       const file = files[0];
       if (!isPdfFile(file)) {
-        utils.showToast("error", "Sai định dạng tệp", `"${file.name}" không phải là file PDF (.pdf).`);
-        utils.setProgress(0, "Vui lòng chọn file PDF hợp lệ", false);
+        showToast("error", "Sai định dạng tệp", `"${file.name}" không phải là file PDF (.pdf).`);
+        setProgress(0, "Vui lòng chọn file PDF hợp lệ", false);
         return;
       }
 
-      utils.setProgress(15, `Đang phân tích "${file.name}"...`);
-      const buffer = await utils.readFileAsArrayBuffer(file);
-      const pdfJsDoc = await utils.openPdfWithPdfJs(buffer, file.name);
-      // Also verify with pdf-lib upfront for tools that modify PDFs so encrypted/broken edge cases are caught early
+      setProgress(15, `Đang phân tích "${file.name}"...`);
+      const buffer = await file.arrayBuffer();
+      const pdfJsDoc = await openPdfWithPdfJs(buffer, file.name);
+
       if (toolId !== "pdf-to-word" && toolId !== "pdf-to-images") {
         try {
-          await utils.openPdfWithPdfLib(buffer, file.name);
+          await openPdfWithPdfLib(buffer, file.name);
         } catch (libErr) {
           if (typeof pdfJsDoc.destroy === "function") pdfJsDoc.destroy();
           throw libErr;
@@ -2285,7 +2291,6 @@
       state.totalPages = pdfJsDoc.numPages;
 
       if (toolId === "split-pdf") {
-        // Pre-select all or leave empty? Let's pre-select page 1 or all? Actually selecting all by default OR clear makes intent explicit: let's pre-select all pages (or empty? Actually selecting nothing lets user pick, OR selecting 1..totalPages if small? No! Letting user click pages or type `1-3, 5` is much cleaner when empty, or let's add a 1-click "Chọn tất cả" right in toolbar!).
         state.splitSelected = new Set();
         state.splitRangeText = "";
         state.splitRangeError = "";
@@ -2303,15 +2308,15 @@
       renderWorkspaceView();
       renderSettingsPanel();
       updatePrimaryActionState();
-      utils.setProgress(0, `Đã sẵn sàng (${state.totalPages} trang)`, false);
+      setProgress(0, `Đã sẵn sàng (${state.totalPages} trang)`, false);
     } catch (err) {
-      utils.setProgress(0, "Không thể nạp tệp", false);
-      utils.showToast("error", "Lỗi đọc tài liệu PDF", err.message || String(err), 6500);
+      setProgress(0, "Không thể nạp tệp", false);
+      showToast("error", "Lỗi đọc tài liệu PDF", err.message || String(err), 6500);
     }
   }
 
   /* --------------------------------------------------------------------------
-     Left Workspace Rendering
+     15. Left Workspace Views
      -------------------------------------------------------------------------- */
 
   function updateDropzoneAppearance() {
@@ -2346,36 +2351,55 @@
     updateDropzoneAppearance();
     if (!hasLoadedData()) return;
 
-    const toolId = state.activeToolId;
-    if (toolId === "merge-pdf") return renderMergeWorkspace();
-    if (toolId === "images-to-pdf") return renderImagesToPdfWorkspace();
-    if (toolId === "pdf-to-word") return renderPdfToWordWorkspace();
-    if (toolId === "split-pdf") return renderSplitWorkspace();
-    if (toolId === "organize-pdf") return renderOrganizeWorkspace();
-    if (toolId === "pdf-to-images") return renderPdfToImagesWorkspace();
-    if (toolId === "watermark-numbers") return renderWatermarkWorkspace();
+    switch (state.activeToolId) {
+      case "merge-pdf":
+        renderMergeWorkspace();
+        break;
+      case "images-to-pdf":
+        renderImagesToPdfWorkspace();
+        break;
+      case "pdf-to-word":
+        renderPdfToWordWorkspace();
+        break;
+      case "split-pdf":
+        renderSplitWorkspace();
+        break;
+      case "organize-pdf":
+        renderOrganizeWorkspace();
+        break;
+      case "pdf-to-images":
+        renderPdfToImagesWorkspace();
+        break;
+      case "watermark-numbers":
+        renderWatermarkWorkspace();
+        break;
+    }
   }
 
-  /* --- Tool 1 Workspace (Summary + Preview Strip) --- */
+  function bindClearWorkspaceButton() {
+    const btn = document.getElementById("clearWorkspaceBtn");
+    if (!btn) return;
+    btn.addEventListener("click", () => {
+      resetLoadedFiles();
+      renderWorkspaceView();
+      renderSettingsPanel();
+      updatePrimaryActionState();
+    });
+  }
+
   function renderPdfToWordWorkspace() {
-    const utils = S();
     const previewLimit = Math.min(state.totalPages, 12);
     dom.stageToolbar.innerHTML = `
       <div class="toolbar-group">
         <span class="toolbar-info">
-          <strong>${utils.escapeHtml(state.fileName)}</strong> • ${utils.formatBytes(state.fileSize)} • <strong>${state.totalPages} trang</strong>
+          <strong>${escapeHtml(state.fileName)}</strong> • ${formatBytes(state.fileSize)} • <strong>${state.totalPages} trang</strong>
         </span>
       </div>
       <div class="toolbar-group">
         <button type="button" class="btn-tool-sm is-danger" id="clearWorkspaceBtn">Xóa tệp</button>
       </div>
     `;
-    document.getElementById("clearWorkspaceBtn").addEventListener("click", () => {
-      resetLoadedFiles();
-      renderWorkspaceView();
-      renderSettingsPanel();
-      updatePrimaryActionState();
-    });
+    bindClearWorkspaceButton();
 
     const cardsHtml = Array.from({ length: previewLimit }, (_, i) => {
       const p = i + 1;
@@ -2414,16 +2438,14 @@
     );
   }
 
-  /* --- Tool 2 Workspace (Merge PDF File List) --- */
   function renderMergeWorkspace() {
-    const utils = S();
     const totalPages = state.mergeFiles.reduce((acc, f) => acc + f.pageCount, 0);
     const totalBytes = state.mergeFiles.reduce((acc, f) => acc + f.size, 0);
 
     dom.stageToolbar.innerHTML = `
       <div class="toolbar-group">
         <span class="toolbar-info">
-          <strong>${state.mergeFiles.length} tệp PDF</strong> • Tổng cộng <strong>${totalPages} trang</strong> (${utils.formatBytes(totalBytes)})
+          <strong>${state.mergeFiles.length} tệp PDF</strong> • Tổng cộng <strong>${totalPages} trang</strong> (${formatBytes(totalBytes)})
         </span>
       </div>
       <div class="toolbar-group">
@@ -2433,12 +2455,7 @@
     `;
 
     document.getElementById("addMoreFilesBtn").addEventListener("click", () => dom.fileInput.click());
-    document.getElementById("clearWorkspaceBtn").addEventListener("click", () => {
-      resetLoadedFiles();
-      renderWorkspaceView();
-      renderSettingsPanel();
-      updatePrimaryActionState();
-    });
+    bindClearWorkspaceButton();
 
     dom.stageBody.innerHTML = `
       <div class="file-list" id="mergeFileList">
@@ -2452,8 +2469,8 @@
             <span class="file-order-num">${idx + 1}</span>
             <span class="file-pdf-badge">PDF</span>
             <div class="file-meta">
-              <div class="file-name" title="${utils.escapeHtml(item.name)}">${utils.escapeHtml(item.name)}</div>
-              <div class="file-sub">${item.pageCount} trang • ${utils.formatBytes(item.size)}</div>
+              <div class="file-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</div>
+              <div class="file-sub">${item.pageCount} trang • ${formatBytes(item.size)}</div>
             </div>
             <div class="file-actions">
               <button type="button" class="icon-btn" data-move-up="${idx}" ${idx === 0 ? "disabled" : ""} title="Chuyển lên">↑</button>
@@ -2474,9 +2491,7 @@
     });
   }
 
-  /* --- Tool 3 Workspace (Split & 2-Way Synchronized Selection Grid) --- */
   function renderSplitWorkspace() {
-    const utils = S();
     dom.stageToolbar.innerHTML = `
       <div class="toolbar-group">
         <span class="toolbar-info" id="splitSelectionSummary">
@@ -2510,12 +2525,7 @@
       state.splitSelected.clear();
       syncSplitFromSetToInputAndGrid();
     });
-    document.getElementById("clearWorkspaceBtn").addEventListener("click", () => {
-      resetLoadedFiles();
-      renderWorkspaceView();
-      renderSettingsPanel();
-      updatePrimaryActionState();
-    });
+    bindClearWorkspaceButton();
 
     const cardsHtml = Array.from({ length: state.totalPages }, (_, idx) => {
       const p = idx + 1;
@@ -2559,7 +2569,7 @@
   }
 
   function syncSplitFromSetToInputAndGrid() {
-    state.splitRangeText = S().formatPageRanges(Array.from(state.splitSelected));
+    state.splitRangeText = formatPageRanges(Array.from(state.splitSelected));
     state.splitRangeError = "";
 
     const rangeInput = document.getElementById("splitRangeInput");
@@ -2595,7 +2605,6 @@
     updatePrimaryActionState();
   }
 
-  /* --- Tool 4 Workspace (Organize, Rotate & Delete) --- */
   function renderOrganizeWorkspace() {
     dom.stageToolbar.innerHTML = `
       <div class="toolbar-group">
@@ -2637,20 +2646,12 @@
       renderOrganizeWorkspace();
       renderSettingsPanel();
     });
-    document.getElementById("clearWorkspaceBtn").addEventListener("click", () => {
-      resetLoadedFiles();
-      renderWorkspaceView();
-      renderSettingsPanel();
-      updatePrimaryActionState();
-    });
+    bindClearWorkspaceButton();
 
     dom.stageBody.innerHTML = `<div class="thumb-grid" id="organizeThumbGrid"></div>`;
     renderOrganizeGridOnly();
 
-    // Queue thumbnails for any page that doesn't have thumbUrl yet
-    const missingPages = state.organizePages
-      .filter((p) => !p.thumbUrl)
-      .map((p) => p.pageNumber);
+    const missingPages = state.organizePages.filter((p) => !p.thumbUrl).map((p) => p.pageNumber);
     if (missingPages.length > 0) {
       startProgressiveThumbQueue(missingPages, 210, (pageNum, url) => {
         const target = state.organizePages.find((p) => p.pageNumber === pageNum);
@@ -2695,7 +2696,6 @@
       })
       .join("");
 
-    // Bind action buttons
     grid.querySelectorAll("[data-rot-left]").forEach((btn) => {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -2720,7 +2720,7 @@
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
         if (state.organizePages.length <= 1) {
-          S().showToast("warning", "Không thể xóa", "Tài liệu phải giữ lại ít nhất 1 trang.");
+          showToast("warning", "Không thể xóa", "Tài liệu phải giữ lại ít nhất 1 trang.");
           return;
         }
         const i = Number(btn.getAttribute("data-del-page"));
@@ -2730,7 +2730,6 @@
       });
     });
 
-    // Drag-and-drop reorder cards
     let dragSrc = null;
     grid.querySelectorAll("[data-org-idx]").forEach((card) => {
       card.addEventListener("dragstart", (e) => {
@@ -2766,15 +2765,13 @@
     });
   }
 
-  /* --- Tool 5 Workspace (Images -> PDF List) --- */
   function renderImagesToPdfWorkspace() {
-    const utils = S();
     const totalBytes = state.imageItems.reduce((acc, it) => acc + it.size, 0);
 
     dom.stageToolbar.innerHTML = `
       <div class="toolbar-group">
         <span class="toolbar-info">
-          <strong>${state.imageItems.length} ảnh</strong> (${utils.formatBytes(totalBytes)}) • Kéo-thả để đổi thứ tự trang
+          <strong>${state.imageItems.length} ảnh</strong> (${formatBytes(totalBytes)}) • Kéo-thả để đổi thứ tự trang
         </span>
       </div>
       <div class="toolbar-group">
@@ -2784,12 +2781,7 @@
     `;
 
     document.getElementById("addMoreImgsBtn").addEventListener("click", () => dom.fileInput.click());
-    document.getElementById("clearWorkspaceBtn").addEventListener("click", () => {
-      resetLoadedFiles();
-      renderWorkspaceView();
-      renderSettingsPanel();
-      updatePrimaryActionState();
-    });
+    bindClearWorkspaceButton();
 
     dom.stageBody.innerHTML = `
       <div class="file-list" id="imageFileList">
@@ -2801,10 +2793,10 @@
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="6" r="1.2"/><circle cx="15" cy="6" r="1.2"/><circle cx="9" cy="12" r="1.2"/><circle cx="15" cy="12" r="1.2"/><circle cx="9" cy="18" r="1.2"/><circle cx="15" cy="18" r="1.2"/></svg>
             </span>
             <span class="file-order-num">${idx + 1}</span>
-            <img class="file-thumb-mini" src="${item.previewUrl}" alt="${utils.escapeHtml(item.name)}" />
+            <img class="file-thumb-mini" src="${item.previewUrl}" alt="${escapeHtml(item.name)}" />
             <div class="file-meta">
-              <div class="file-name" title="${utils.escapeHtml(item.name)}">${utils.escapeHtml(item.name)}</div>
-              <div class="file-sub">${item.width} × ${item.height} px • ${utils.formatBytes(item.size)}</div>
+              <div class="file-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</div>
+              <div class="file-sub">${item.width} × ${item.height} px • ${formatBytes(item.size)}</div>
             </div>
             <div class="file-actions">
               <button type="button" class="icon-btn" data-move-up="${idx}" ${idx === 0 ? "disabled" : ""} title="Chuyển lên">↑</button>
@@ -2825,7 +2817,6 @@
     });
   }
 
-  /* --- Shared Reorderable List Wiring (Merge & Images) --- */
   function wireReorderableList(listEl, arrayRef, onChange) {
     if (!listEl) return;
 
@@ -2855,9 +2846,7 @@
       btn.addEventListener("click", () => {
         const idx = Number(btn.getAttribute("data-remove"));
         const removed = arrayRef.splice(idx, 1)[0];
-        if (removed && removed.previewUrl) {
-          S().revokeTrackedUrl(removed.previewUrl);
-        }
+        if (removed && removed.previewUrl) revokeTrackedUrl(removed.previewUrl);
         onChange();
       });
     });
@@ -2897,27 +2886,20 @@
     });
   }
 
-  /* --- Tool 6 Workspace (PDF -> Images Preview + Per-page Download) --- */
   function renderPdfToImagesWorkspace() {
-    const utils = S();
     const extUpper = state.imgOutFormat.toUpperCase();
 
     dom.stageToolbar.innerHTML = `
       <div class="toolbar-group">
         <span class="toolbar-info">
-          <strong>${utils.escapeHtml(state.fileName)}</strong> • <strong>${state.totalPages} trang</strong>
+          <strong>${escapeHtml(state.fileName)}</strong> • <strong>${state.totalPages} trang</strong>
         </span>
       </div>
       <div class="toolbar-group">
         <button type="button" class="btn-tool-sm is-danger" id="clearWorkspaceBtn">Đổi tệp</button>
       </div>
     `;
-    document.getElementById("clearWorkspaceBtn").addEventListener("click", () => {
-      resetLoadedFiles();
-      renderWorkspaceView();
-      renderSettingsPanel();
-      updatePrimaryActionState();
-    });
+    bindClearWorkspaceButton();
 
     const cardsHtml = Array.from({ length: state.totalPages }, (_, i) => {
       const p = i + 1;
@@ -2946,14 +2928,14 @@
         btn.disabled = true;
         btn.textContent = "Đang xuất...";
         try {
-          const res = await Conv().exportSinglePdfPageImage(state.pdfJsDoc, pageNum, {
+          const res = await exportSinglePdfPageImage(state.pdfJsDoc, pageNum, {
             format: state.imgOutFormat,
             scale: state.imgOutScale,
             baseName: dom.outputFilenameInput.value || state.fileName,
           });
-          utils.showToast("success", "Đã tải ảnh lẻ", `${res.filename} (${utils.formatBytes(res.size)})`);
+          showToast("success", "Đã tải ảnh lẻ", `${res.filename} (${formatBytes(res.size)})`);
         } catch (err) {
-          utils.showToast("error", "Lỗi xuất ảnh", err.message);
+          showToast("error", "Lỗi xuất ảnh", err.message);
         } finally {
           btn.disabled = false;
           btn.textContent = originalText;
@@ -2967,25 +2949,18 @@
     );
   }
 
-  /* --- Tool 7 Workspace (Watermark & Page Numbers Live Preview) --- */
   async function renderWatermarkWorkspace() {
-    const utils = S();
     dom.stageToolbar.innerHTML = `
       <div class="toolbar-group">
         <span class="toolbar-info">
-          <strong>${utils.escapeHtml(state.fileName)}</strong> • <strong>${state.totalPages} trang</strong>
+          <strong>${escapeHtml(state.fileName)}</strong> • <strong>${state.totalPages} trang</strong>
         </span>
       </div>
       <div class="toolbar-group">
         <button type="button" class="btn-tool-sm is-danger" id="clearWorkspaceBtn">Đổi tệp</button>
       </div>
     `;
-    document.getElementById("clearWorkspaceBtn").addEventListener("click", () => {
-      resetLoadedFiles();
-      renderWorkspaceView();
-      renderSettingsPanel();
-      updatePrimaryActionState();
-    });
+    bindClearWorkspaceButton();
 
     dom.stageBody.innerHTML = `
       <div class="live-preview-wrap">
@@ -3000,14 +2975,14 @@
 
     const session = state.renderSessionId;
     try {
-      const rendered = await utils.renderPdfPageToBlob(state.pdfJsDoc, 1, {
+      const rendered = await renderPdfPageToBlob(state.pdfJsDoc, 1, {
         maxWidth: 460,
         mimeType: "image/jpeg",
         quality: 0.88,
       });
       if (session !== state.renderSessionId || state.activeToolId !== "watermark-numbers") return;
 
-      const url = utils.trackObjectUrl(URL.createObjectURL(rendered.blob));
+      const url = trackObjectUrl(URL.createObjectURL(rendered.blob));
       state.wmPreviewUrl = url;
       state.wmPreviewPagePointWidth = rendered.pointWidth || 595;
 
@@ -3022,12 +2997,10 @@
       `;
 
       const imgEl = document.getElementById("livePreviewImg");
-      if (imgEl) {
-        imgEl.addEventListener("load", updateWatermarkLiveOverlay);
-      }
+      if (imgEl) imgEl.addEventListener("load", updateWatermarkLiveOverlay);
       updateWatermarkLiveOverlay();
     } catch (err) {
-      utils.showToast("error", "Lỗi xem trước", err.message);
+      showToast("error", "Lỗi xem trước", err.message);
     }
   }
 
@@ -3044,7 +3017,6 @@
       wmTextEl.style.color = state.wmColor;
       wmTextEl.style.opacity = String(state.wmOpacity);
 
-      // Scale preview font relative to actual PDF point width
       const renderedW = (imgEl && imgEl.clientWidth) || 380;
       const ratio = renderedW / Math.max(200, state.wmPreviewPagePointWidth || 595);
       wmTextEl.style.fontSize = `${Math.max(10, state.wmFontSize * ratio)}px`;
@@ -3055,21 +3027,14 @@
     if (state.wmEnableNumbers) {
       numEl.classList.remove("hidden");
       numEl.textContent =
-        state.wmNumberFormat === "page_of_total"
-          ? `Trang 1 / ${state.totalPages}`
-          : "1";
+        state.wmNumberFormat === "page_of_total" ? `Trang 1 / ${state.totalPages}` : "1";
       numEl.className = `live-pagenum-overlay pos-${state.wmNumberPos}`;
     } else {
       numEl.classList.add("hidden");
     }
   }
 
-  /* --------------------------------------------------------------------------
-     Progressive Thumbnail Queue (In-place DOM update, non-blocking)
-     -------------------------------------------------------------------------- */
-
   async function startProgressiveThumbQueue(pageNumbers, maxWidth, onEachRendered) {
-    const utils = S();
     const session = state.renderSessionId;
     const toolId = state.activeToolId;
     const doc = state.pdfJsDoc;
@@ -3080,21 +3045,18 @@
       const pageNum = pageNumbers[i];
 
       try {
-        const rendered = await utils.renderPdfPageToBlob(doc, pageNum, {
+        const rendered = await renderPdfPageToBlob(doc, pageNum, {
           maxWidth,
           mimeType: "image/jpeg",
           quality: 0.78,
         });
         if (session !== state.renderSessionId || state.activeToolId !== toolId) return;
 
-        const url = utils.trackObjectUrl(URL.createObjectURL(rendered.blob));
-        if (typeof onEachRendered === "function") {
-          onEachRendered(pageNum, url);
-        }
+        const url = trackObjectUrl(URL.createObjectURL(rendered.blob));
+        if (typeof onEachRendered === "function") onEachRendered(pageNum, url);
 
         const stages = dom.stageBody.querySelectorAll(`[data-thumb-stage="${pageNum}"]`);
         stages.forEach((stageEl) => {
-          // Preserve rotation transform if tool 4 already rotated this item while loading
           let extraStyle = "";
           if (toolId === "organize-pdf") {
             const orgItem = state.organizePages.find((p) => p.pageNumber === pageNum);
@@ -3106,17 +3068,15 @@
           stageEl.innerHTML = `<img class="page-thumb-img" src="${url}" alt="Trang ${pageNum}" style="${extraStyle}" />`;
         });
       } catch (_err) {
-        // Leave placeholder gracefully if a single thumbnail fails
+        // Leave skeleton gracefully if a single page fails
       }
 
-      if (i % 2 === 1) {
-        await utils.yieldToUI();
-      }
+      if (i % 2 === 1) await yieldToUI();
     }
   }
 
   /* --------------------------------------------------------------------------
-     Right Sidebar: Dynamic Tool Settings Rendering
+     16. Right Sidebar Settings & Primary Execution
      -------------------------------------------------------------------------- */
 
   function renderSettingsPanel() {
@@ -3169,7 +3129,7 @@
           </div>
           ${
             state.wordRangeMode === "custom"
-              ? `<input type="text" id="wordRangeInput" class="text-input" value="${S().escapeHtml(state.wordRangeText)}" placeholder="Ví dụ: 1-5 hoặc 1-3, 7" />
+              ? `<input type="text" id="wordRangeInput" class="text-input" value="${escapeHtml(state.wordRangeText)}" placeholder="Ví dụ: 1-5 hoặc 1-3, 7" />
                  <span id="wordRangeHint" class="setting-hint">${state.totalPages > 0 ? `Tài liệu có ${state.totalPages} trang. ` : ""}Nhập dạng 1-5 hoặc 1-3, 8.</span>`
               : `<span class="setting-hint">${state.totalPages > 0 ? `Sẽ chuyển toàn bộ ${state.totalPages} trang.` : "Sẽ chuyển toàn bộ các trang sau khi tải PDF."}</span>`
           }
@@ -3209,19 +3169,17 @@
       if (rangeIn) {
         const validateWordRangeHint = () => {
           const hint = document.getElementById("wordRangeHint");
-          if (!hint) return;
-          if (state.totalPages > 0) {
-            const parsed = S().parsePageRange(state.wordRangeText, state.totalPages);
-            if (parsed.error) {
-              hint.textContent = parsed.error;
-              hint.classList.add("is-error");
-            } else if (parsed.pages.length === 0) {
-              hint.textContent = `Tài liệu có ${state.totalPages} trang. Vui lòng nhập khoảng trang (vd: 1-5).`;
-              hint.classList.add("is-error");
-            } else {
-              hint.textContent = `Sẽ chuyển ${parsed.pages.length} trang đã chọn (trên tổng ${state.totalPages} trang).`;
-              hint.classList.remove("is-error");
-            }
+          if (!hint || state.totalPages <= 0) return;
+          const parsed = parsePageRange(state.wordRangeText, state.totalPages);
+          if (parsed.error) {
+            hint.textContent = parsed.error;
+            hint.classList.add("is-error");
+          } else if (parsed.pages.length === 0) {
+            hint.textContent = `Tài liệu có ${state.totalPages} trang. Vui lòng nhập khoảng trang (vd: 1-5).`;
+            hint.classList.add("is-error");
+          } else {
+            hint.textContent = `Sẽ chuyển ${parsed.pages.length} trang đã chọn (trên tổng ${state.totalPages} trang).`;
+            hint.classList.remove("is-error");
           }
         };
         validateWordRangeHint();
@@ -3261,12 +3219,12 @@
             type="text"
             id="splitRangeInput"
             class="text-input"
-            value="${S().escapeHtml(state.splitRangeText)}"
+            value="${escapeHtml(state.splitRangeText)}"
             placeholder="Ví dụ: 1-3, 5, 8-12"
             ${state.totalPages === 0 ? "disabled" : ""}
           />
           <span id="splitRangeHint" class="setting-hint ${state.splitRangeError ? "is-error" : ""}">
-            ${S().escapeHtml(state.splitRangeError || "Đồng bộ 2 chiều: gõ tại đây hoặc bấm trực tiếp vào ảnh trang bên trái.")}
+            ${escapeHtml(state.splitRangeError || "Đồng bộ 2 chiều: gõ tại đây hoặc bấm trực tiếp vào ảnh trang bên trái.")}
           </span>
         </div>
 
@@ -3295,7 +3253,7 @@
       if (splitInput) {
         splitInput.addEventListener("input", () => {
           state.splitRangeText = splitInput.value;
-          const parsed = S().parsePageRange(splitInput.value, state.totalPages);
+          const parsed = parsePageRange(splitInput.value, state.totalPages);
           const hint = document.getElementById("splitRangeHint");
           if (parsed.error) {
             state.splitRangeError = parsed.error;
@@ -3421,7 +3379,6 @@
         btn.addEventListener("click", () => {
           state.imgOutFormat = btn.getAttribute("data-img-fmt");
           renderSettingsPanel();
-          // Update single download labels cleanly without re-rendering thumbnails
           document.querySelectorAll("[data-dl-img-page]").forEach((dlBtn) => {
             dlBtn.textContent = `Tải ảnh .${state.imgOutFormat.toUpperCase()}`;
           });
@@ -3477,7 +3434,7 @@
             ? `<div class="sub-settings-box">
                 <div class="setting-group">
                   <label for="wmTextInput" class="setting-label">Nội dung chữ bản quyền</label>
-                  <input type="text" id="wmTextInput" class="text-input" value="${S().escapeHtml(state.wmText)}" placeholder="Ví dụ: Tài liệu lưu hành nội bộ" />
+                  <input type="text" id="wmTextInput" class="text-input" value="${escapeHtml(state.wmText)}" placeholder="Ví dụ: Tài liệu lưu hành nội bộ" />
                 </div>
 
                 <div class="setting-group">
@@ -3599,38 +3556,33 @@
     }
   }
 
-  /* --------------------------------------------------------------------------
-     Output Filename & Primary Action Execution
-     -------------------------------------------------------------------------- */
-
   function updateOutputFilenameDefault() {
-    const utils = S();
     const tool = getToolById(state.activeToolId);
     if (!tool) return;
 
     let defaultBase = "ket_qua";
     if (state.fileName) {
-      const base = utils.stripExtension(state.fileName);
+      const base = stripExtension(state.fileName);
       if (tool.id === "pdf-to-word") defaultBase = `${base}_word`;
       else if (tool.id === "split-pdf") defaultBase = `${base}_tach_trang`;
       else if (tool.id === "organize-pdf") defaultBase = `${base}_da_sap_xep`;
       else if (tool.id === "pdf-to-images") defaultBase = `${base}_hinh_anh`;
       else if (tool.id === "watermark-numbers") defaultBase = `${base}_dong_dau`;
     } else if (tool.id === "merge-pdf") {
-      defaultBase = state.mergeFiles.length > 0
-        ? `${utils.stripExtension(state.mergeFiles[0].name)}_gop`
-        : "tai_lieu_gop";
+      defaultBase =
+        state.mergeFiles.length > 0
+          ? `${stripExtension(state.mergeFiles[0].name)}_gop`
+          : "tai_lieu_gop";
     } else if (tool.id === "images-to-pdf") {
-      defaultBase = state.imageItems.length > 0
-        ? `${utils.stripExtension(state.imageItems[0].name)}_pdf`
-        : "anh_sang_pdf";
+      defaultBase =
+        state.imageItems.length > 0
+          ? `${stripExtension(state.imageItems[0].name)}_pdf`
+          : "anh_sang_pdf";
     }
 
     dom.outputFilenameInput.value = defaultBase;
     dom.outputExtBadge.textContent =
-      tool.id === "split-pdf" && state.splitExportMode === "zip_pages"
-        ? ".zip"
-        : tool.defaultExt;
+      tool.id === "split-pdf" && state.splitExportMode === "zip_pages" ? ".zip" : tool.defaultExt;
   }
 
   function updatePrimaryActionState() {
@@ -3670,7 +3622,7 @@
           if (state.wordRangeMode === "all") {
             ready = true;
           } else {
-            const parsed = S().parsePageRange(state.wordRangeText, state.totalPages);
+            const parsed = parsePageRange(state.wordRangeText, state.totalPages);
             ready = !parsed.error && parsed.pages.length > 0;
           }
         }
@@ -3683,18 +3635,7 @@
   }
 
   async function executePrimaryAction() {
-    const utils = S();
     if (state.isProcessing || !state.activeToolId) return;
-
-    const missingLibs = utils.checkRequiredLibraries();
-    if (missingLibs.length > 0) {
-      utils.showToast(
-        "error",
-        "Thiếu thư viện xử lý",
-        `Chưa tải được: ${missingLibs.join(", ")}. Vui lòng kiểm tra kết nối mạng.`
-      );
-      return;
-    }
 
     state.isProcessing = true;
     dom.resultSummaryCard.classList.add("hidden");
@@ -3706,7 +3647,7 @@
       let result = null;
 
       if (state.activeToolId === "pdf-to-word") {
-        result = await Conv().runPdfToWord(state, {
+        result = await runPdfToWord({
           mode: state.wordMode,
           pageRangeMode: state.wordRangeMode,
           pageRangeText: state.wordRangeText,
@@ -3716,7 +3657,7 @@
         });
 
         if (result.emptyTextPagesCount > 0 && result.mode === "editable") {
-          utils.showToast(
+          showToast(
             "warning",
             "Phát hiện trang scan / ảnh",
             `${result.emptyTextPagesCount} trang không có chữ chọn được. Hãy thử chế độ "Giữ nguyên bố cục & Công thức" nếu cần.`,
@@ -3724,30 +3665,30 @@
           );
         }
       } else if (state.activeToolId === "merge-pdf") {
-        result = await PdfT().runMergePdf(state.mergeFiles, outputName);
+        result = await runMergePdf(state.mergeFiles, outputName);
       } else if (state.activeToolId === "split-pdf") {
-        result = await PdfT().runSplitPdf(state, {
+        result = await runSplitPdf({
           selectedPages: Array.from(state.splitSelected),
           exportMode: state.splitExportMode,
           outputName,
         });
       } else if (state.activeToolId === "organize-pdf") {
-        result = await PdfT().runOrganizePdf(state, state.organizePages, outputName);
+        result = await runOrganizePdf(state.organizePages, outputName);
       } else if (state.activeToolId === "images-to-pdf") {
-        result = await Conv().runImagesToPdf(state.imageItems, {
+        result = await runImagesToPdf(state.imageItems, {
           paperSize: state.imgPaperSize,
           orientation: state.imgOrientation,
           marginMode: state.imgMargin,
           outputName,
         });
       } else if (state.activeToolId === "pdf-to-images") {
-        result = await Conv().runPdfToAllImagesZip(state, {
+        result = await runPdfToAllImagesZip({
           format: state.imgOutFormat,
           scale: state.imgOutScale,
           outputName,
         });
       } else if (state.activeToolId === "watermark-numbers") {
-        result = await PdfT().runWatermarkAndNumbers(state, {
+        result = await runWatermarkAndNumbers({
           enableNumbers: state.wmEnableNumbers,
           numberFormat: state.wmNumberFormat,
           numberPosition: state.wmNumberPos,
@@ -3764,14 +3705,14 @@
         dom.resultSummaryCard.classList.remove("hidden");
         dom.resultSummaryCard.innerHTML = `
           <strong>✓ Xuất file thành công!</strong>
-          <span>Tệp: <b>${utils.escapeHtml(result.filename)}</b></span>
-          <span>Dung lượng: ${utils.formatBytes(result.size)}${result.pageCount ? ` • ${result.pageCount} trang` : ""}</span>
+          <span>Tệp: <b>${escapeHtml(result.filename)}</b></span>
+          <span>Dung lượng: ${formatBytes(result.size)}${result.pageCount ? ` • ${result.pageCount} trang` : ""}</span>
         `;
-        utils.showToast("success", "Xử lý hoàn tất", `Đã tải xuống tệp "${result.filename}".`);
+        showToast("success", "Xử lý hoàn tất", `Đã tải xuống tệp "${result.filename}".`);
       }
     } catch (err) {
-      utils.setProgress(0, "Xử lý gặp lỗi", false);
-      utils.showToast("error", "Không thể hoàn tất thao tác", err.message || String(err), 6500);
+      setProgress(0, "Xử lý gặp lỗi", false);
+      showToast("error", "Không thể hoàn tất thao tác", err.message || String(err), 6500);
     } finally {
       state.isProcessing = false;
       updatePrimaryActionState();
@@ -3779,80 +3720,78 @@
   }
 
   /* --------------------------------------------------------------------------
-     Global Event Listeners & App Boot
+     17. Event Wiring & Bootstrap
      -------------------------------------------------------------------------- */
 
   function bindEvents() {
-    dom.brandHomeBtn.addEventListener("click", showDashboard);
-    dom.navHomeBtn.addEventListener("click", showDashboard);
-    dom.backToHomeBtn.addEventListener("click", showDashboard);
+    if (dom.brandHomeBtn) dom.brandHomeBtn.addEventListener("click", showDashboard);
+    if (dom.navHomeBtn) dom.navHomeBtn.addEventListener("click", showDashboard);
+    if (dom.backToHomeBtn) dom.backToHomeBtn.addEventListener("click", showDashboard);
 
-    dom.dropzone.addEventListener("click", () => {
-      if (!state.isProcessing) dom.fileInput.click();
-    });
-    dom.dropzone.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        if (!state.isProcessing) dom.fileInput.click();
-      }
-    });
-
-    dom.fileInput.addEventListener("change", (e) => {
-      const selectedFiles = e.target.files ? Array.from(e.target.files) : [];
-      dom.fileInput.value = "";
-      handleIncomingFiles(selectedFiles);
-    });
-
-    // Drag & Drop onto Dropzone (prevent browser from navigating to dropped PDF)
-    ["dragenter", "dragover"].forEach((evt) => {
-      dom.dropzone.addEventListener(evt, (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        dom.dropzone.classList.add("is-dragover");
+    if (dom.dropzone) {
+      dom.dropzone.addEventListener("click", () => {
+        if (!state.isProcessing && dom.fileInput) dom.fileInput.click();
       });
-    });
-
-    ["dragleave", "drop"].forEach((evt) => {
-      dom.dropzone.addEventListener(evt, (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        dom.dropzone.classList.remove("is-dragover");
+      dom.dropzone.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          if (!state.isProcessing && dom.fileInput) dom.fileInput.click();
+        }
       });
-    });
 
-    dom.dropzone.addEventListener("drop", (e) => {
-      if (e.dataTransfer && e.dataTransfer.files) {
-        handleIncomingFiles(e.dataTransfer.files);
-      }
-    });
+      ["dragenter", "dragover"].forEach((evt) => {
+        dom.dropzone.addEventListener(evt, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dom.dropzone.classList.add("is-dragover");
+        });
+      });
 
-    // Prevent accidental tab navigation when dropping outside dropzone in workspace
-    window.addEventListener("dragover", (e) => e.preventDefault());
-    window.addEventListener("drop", (e) => e.preventDefault());
+      ["dragleave", "drop"].forEach((evt) => {
+        dom.dropzone.addEventListener(evt, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dom.dropzone.classList.remove("is-dragover");
+        });
+      });
 
-    dom.primaryActionBtn.addEventListener("click", executePrimaryAction);
+      dom.dropzone.addEventListener("drop", (e) => {
+        if (e.dataTransfer && e.dataTransfer.files) {
+          handleIncomingFiles(e.dataTransfer.files);
+        }
+      });
+    }
 
-    // Clean up memory if user closes or refreshes tab
-    window.addEventListener("beforeunload", () => {
-      S().revokeAllTrackedUrls();
+    if (dom.fileInput) {
+      dom.fileInput.addEventListener("change", (e) => {
+        const selectedFiles = e.target.files ? Array.from(e.target.files) : [];
+        dom.fileInput.value = "";
+        handleIncomingFiles(selectedFiles);
+      });
+    }
+
+    global.addEventListener("dragover", (e) => e.preventDefault());
+    global.addEventListener("drop", (e) => e.preventDefault());
+
+    if (dom.primaryActionBtn) {
+      dom.primaryActionBtn.addEventListener("click", executePrimaryAction);
+    }
+
+    global.addEventListener("beforeunload", () => {
+      revokeAllTrackedUrls();
     });
   }
 
   function init() {
-    cacheDom();
-    S().configurePdfWorkerSync();
-
-    const missing = S().checkRequiredLibraries();
-    if (missing.length > 0) {
-      dom.cdnWarningBanner.classList.remove("hidden");
-      dom.cdnWarningDetail.textContent = `Thiếu thư viện: ${missing.join(", ")}. Hãy kiểm tra kết nối Internet và tải lại trang.`;
-    } else {
-      // Warm up worker in background without blocking first paint
-      S().ensurePdfWorkerReady();
+    try {
+      cacheDom();
+      renderDashboard();
+      bindEvents();
+    } catch (uiErr) {
+      console.error("Lỗi khởi tạo giao diện PDF Studio Pro:", uiErr);
     }
 
-    renderDashboard();
-    bindEvents();
+    initExternalLibrariesSafely();
   }
 
   if (document.readyState === "loading") {
@@ -3861,4 +3800,3 @@
     init();
   }
 })(window);
-
